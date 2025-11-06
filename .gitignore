@@ -34,6 +34,7 @@ dist/
 sdist/
 wheels/
 downloads/
+datasets/
 eggs/
 .eggs/
 parts/

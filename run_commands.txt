@@ -1,0 +1,16 @@
+python3 src/lerobot/scripts/lerobot_train.py \
+  --dataset.root=/home/local/ASUAD/prath4/Repos/lerobot/datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --policy.type=act \
+  --policy.chunk_size=16 \
+  --policy.n_action_steps=16 \
+  --policy.push_to_hub=false \
+  --output_dir=outputs/train/act_franka_fr3_softtoy \
+  --job_name=act_franka_fr3_softtoy \
+  --steps=8000 \
+  --batch_size=64 \
+  --log_freq=250 \
+  --save_freq=5000 \
+  --eval_freq=0 \
+  --wandb.enable=false \
+  --policy.device=cuda
