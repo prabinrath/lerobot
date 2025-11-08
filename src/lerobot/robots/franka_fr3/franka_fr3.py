@@ -15,9 +15,8 @@
 # limitations under the License.
 
 import logging
-import time
 from functools import cached_property
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 
@@ -26,6 +25,7 @@ from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnected
 
 from ..robot import Robot
 from .config_franka_fr3 import FrankaFR3Config
+from .franka_interface import initialize_franka_interface, FrankaInterface
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +47,14 @@ class FrankaFR3(Robot):
         self._is_connected = False
         self._is_calibrated = True  # Franka robots are self-calibrating
         
-        # Joint names for Franka FR3 (7-DOF arm + gripper)
-        self.joint_names = [
-            "joint1", "joint2", "joint3", "joint4", 
-            "joint5", "joint6", "joint7", "gripper"
-        ]
+        # Joint names from config
+        self.joint_names = config.joint_names
         
         # Initialize camera systems
         self.cameras = make_cameras_from_configs(config.cameras)
         
-        # Robot state storage
-        self._current_joint_positions = np.zeros(8)  # 7 joints + gripper
-        self._current_joint_velocities = np.zeros(8)
+        # ROS2 interface (initialized on connect)
+        self.franka_interface: Optional[FrankaInterface] = None
         
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -92,9 +88,14 @@ class FrankaFR3(Robot):
     @property
     def is_connected(self) -> bool:
         """Check if robot is connected"""
-        return self._is_connected and all(cam.is_connected for cam in self.cameras.values())
+        return (
+            self._is_connected 
+            and self.franka_interface is not None
+            and self.franka_interface.is_ready()
+            and all(cam.is_connected for cam in self.cameras.values())
+        )
 
-    def connect(self, calibrate: bool = True) -> None:
+    def connect(self, calibrate: bool = False) -> None:
         """
         Connect to the Franka FR3 robot.
         
@@ -104,11 +105,21 @@ class FrankaFR3(Robot):
         if self.is_connected:
             raise DeviceAlreadyConnectedError(f"{self} already connected")
 
-        logger.info(f"Connecting to Franka FR3 at {self.config.robot_ip}")
+        logger.info("Connecting to Franka FR3")
         
         try:
-            # Note: In a real implementation, you would initialize the Franka control interface here
-            # For now, we'll simulate the connection
+            # Initialize ROS2 interface
+            self.franka_interface = initialize_franka_interface(
+                node_name=f"franka_fr3_{id(self)}",
+                joint_trajectory_topic=self.config.joint_trajectory_topic,
+                joint_state_topic=self.config.joint_state_topic,
+                gripper_action_name=self.config.gripper_action_name,
+                alpha=self.config.alpha,
+                dt=self.config.dt,
+                numb_duration=self.config.numb_duration,
+                grasp_threshold=self.config.grasp_threshold,
+            )
+            
             self._is_connected = True
             logger.info("Successfully connected to Franka FR3")
             
@@ -141,8 +152,8 @@ class FrankaFR3(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected")
             
-        logger.info("Configuring Franka FR3 settings")
-        # In a real implementation, this would set up:
+        logger.info("Configured Franka FR3 settings")
+        # Ideally, this would set up:
         # - Control modes (position, velocity, torque)
         # - Safety limits and collision behavior
         # - Impedance parameters
@@ -160,9 +171,13 @@ class FrankaFR3(Robot):
 
         observation = {}
         
-        # Get joint positions
+        # Get joint positions from ROS2 interface
+        joint_positions = self.franka_interface.get_joint_positions()
+        if joint_positions is None:
+            raise RuntimeError("No joint positions available from Franka interface")
+        
         for i, joint in enumerate(self.joint_names):
-            observation[f"{joint}.pos"] = float(self._current_joint_positions[i])
+            observation[f"{joint}.pos"] = float(joint_positions[i])
         
         # Get camera images
         for cam_name, cam in self.cameras.items():
@@ -183,33 +198,46 @@ class FrankaFR3(Robot):
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected")
 
+        # Get current joint positions
+        current_joint_positions = self.franka_interface.get_joint_positions()
+        if current_joint_positions is None:
+            logger.warning("Cannot send action: no current joint positions available")
+            return {}
+        
         # Extract target positions
         target_positions = np.zeros(8)
         for i, joint in enumerate(self.joint_names):
             key = f"{joint}.pos"
             if key in action:
                 target_positions[i] = action[key]
+            else:
+                # Keep current position if not specified
+                target_positions[i] = current_joint_positions[i]
         
-        # Apply safety limits if configured
+        # Apply safety limits if configured (only to arm joints, not gripper)
         if self.config.max_relative_target is not None:
             if isinstance(self.config.max_relative_target, float):
-                # Global limit for all joints
+                # Global limit for arm joints only (first 7)
                 max_delta = self.config.max_relative_target
-                delta = target_positions - self._current_joint_positions
+                delta = target_positions[:7] - current_joint_positions[:7]
                 delta = np.clip(delta, -max_delta, max_delta)
-                target_positions = self._current_joint_positions + delta
+                target_positions[:7] = current_joint_positions[:7] + delta
             elif isinstance(self.config.max_relative_target, dict):
-                # Per-joint limits
-                for i, joint in enumerate(self.joint_names):
+                # Per-joint limits (only apply to arm joints, not gripper)
+                for i, joint in enumerate(self.joint_names[:7]):  # Only first 7 joints
                     if joint in self.config.max_relative_target:
                         max_delta = self.config.max_relative_target[joint]
-                        delta = target_positions[i] - self._current_joint_positions[i]
+                        delta = target_positions[i] - current_joint_positions[i]
                         delta = np.clip(delta, -max_delta, max_delta)
-                        target_positions[i] = self._current_joint_positions[i] + delta
+                        target_positions[i] = current_joint_positions[i] + delta
 
-        # In a real implementation, send commands to robot here
-        # For simulation, just update the current position
-        self._current_joint_positions = target_positions
+        # Send arm joint positions (first 7 joints)
+        arm_positions = target_positions[:7]
+        self.franka_interface.send_joint_positions(arm_positions, use_filtering=True)
+        
+        # Send gripper position (8th position)
+        gripper_position = target_positions[7]
+        self.franka_interface.send_gripper_position(gripper_position)
         
         # Return the actual action sent
         sent_action = {}
@@ -220,7 +248,7 @@ class FrankaFR3(Robot):
 
     def disconnect(self) -> None:
         """Disconnect from the robot and cleanup"""
-        if not self.is_connected:
+        if not self._is_connected:
             return
             
         logger.info("Disconnecting from Franka FR3")
@@ -229,8 +257,9 @@ class FrankaFR3(Robot):
         for cam in self.cameras.values():
             cam.disconnect()
         
-        # In a real implementation, properly close robot connection here
-        self._is_connected = False
+        # Shutdown ROS2 interface
+        if self.franka_interface is not None:
+            self.franka_interface.shutdown()
+            self.franka_interface = None
         
-        if self.config.disable_torque_on_disconnect:
-            logger.info("Torque disabled on disconnect")
+        self._is_connected = False

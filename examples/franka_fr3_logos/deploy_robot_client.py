@@ -9,14 +9,13 @@ to execute your trained policy (ACT, Diffusion, VQ-BeT, SmolVLA, GROOT, PI0, PI0
 Usage:
     python deploy_robot_client.py [OPTIONS]
 
-Example:
+Example (with RealSense cameras):
     python deploy_robot_client.py \
         --server_address 127.0.0.1:8080 \
-        --robot_ip 172.16.0.2 \
         --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last \
         --policy_type act \
         --task "pick up the soft toy and place it in the drawer" \
-        --cameras "{'camera_wrist': {'type': 'opencv', 'index_or_path': 0, 'width': 480, 'height': 640, 'fps': 30}}"
+        --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}"
 """
 
 import argparse
@@ -28,7 +27,7 @@ from pathlib import Path
 from lerobot.async_inference.configs import RobotClientConfig
 from lerobot.async_inference.helpers import visualize_action_queue_size
 from lerobot.async_inference.robot_client import RobotClient
-from lerobot.cameras.opencv.configuration_opencv import OpenCVCameraConfig
+from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
 
@@ -38,33 +37,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-
-def parse_cameras_config(cameras_str: str) -> dict:
-    """
-    Parse camera configuration string into proper config objects.
-    
-    Expected format: 
-    "{'camera_wrist': {'type': 'opencv', 'index_or_path': 0, 'width': 480, 'height': 640, 'fps': 30}}"
-    """
-    try:
-        cameras_dict = ast.literal_eval(cameras_str)
-        camera_configs = {}
-        
-        for cam_name, cam_config in cameras_dict.items():
-            if cam_config['type'] == 'opencv':
-                camera_configs[cam_name] = OpenCVCameraConfig(
-                    index_or_path=cam_config['index_or_path'],
-                    width=cam_config['width'],
-                    height=cam_config['height'],
-                    fps=cam_config['fps']
-                )
-            else:
-                raise ValueError(f"Unsupported camera type: {cam_config['type']}")
-        
-        return camera_configs
-    except Exception as e:
-        raise ValueError(f"Failed to parse cameras config: {e}")
 
 
 def main():
@@ -82,12 +54,6 @@ def main():
     )
     
     # Franka FR3 configuration
-    parser.add_argument(
-        "--robot_ip", 
-        type=str, 
-        default="172.16.0.2",
-        help="IP address of the Franka FR3 robot"
-    )
     parser.add_argument(
         "--robot_id", 
         type=str, 
@@ -127,14 +93,14 @@ def main():
         "--cameras", 
         type=str, 
         required=True,
-        help="Camera configuration as a Python dict string. Example: \"{'camera_wrist': {'type': 'opencv', 'index_or_path': 0, 'width': 480, 'height': 640, 'fps': 30}}\""
+        help="Camera configuration as a Python dict string where keys are camera names and values are RealSenseCameraConfig parameters. Example: \"{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}\""
     )
     
     # Control parameters
     parser.add_argument(
         "--actions_per_chunk", 
         type=int, 
-        default=10,
+        default=16,
         help="Number of actions per inference chunk (ACT: 5-20, VQ-BeT: 10-50, etc.)"
     )
     parser.add_argument(
@@ -192,17 +158,32 @@ def main():
     
     # Parse camera configuration
     try:
-        camera_configs = parse_cameras_config(args.cameras)
+        cameras_dict = ast.literal_eval(args.cameras)
+        
+        # Map rotation degrees to Cv2Rotation enum
+        rotation_map = {
+            0: Cv2Rotation.NO_ROTATION,
+            90: Cv2Rotation.ROTATE_90,
+            180: Cv2Rotation.ROTATE_180,
+            270: Cv2Rotation.ROTATE_270,
+        }
+        
+        camera_configs = {}
+        for camera_name, config in cameras_dict.items():
+            # Convert rotation if present
+            if 'rotation' in config:
+                config = {**config, 'rotation': rotation_map[config['rotation']]}
+            
+            camera_configs[camera_name] = RealSenseCameraConfig(**config)
+            
     except Exception as e:
         logger.error(f"Failed to parse camera configuration: {e}")
         return 1
     
     # Create Franka FR3 robot configuration
     robot_config = FrankaFR3Config(
-        robot_ip=args.robot_ip,
         id=args.robot_id,
         cameras=camera_configs,
-        disable_torque_on_disconnect=True,
     )
     
     # Add safety parameters if provided
@@ -229,13 +210,15 @@ def main():
     logger.info("Franka FR3 Policy Deployment Client")
     logger.info("="*70)
     logger.info(f"Server Address: {client_config.server_address}")
-    logger.info(f"Robot IP: {robot_config.robot_ip}")
     logger.info(f"Robot ID: {robot_config.id}")
     logger.info(f"Policy Type: {client_config.policy_type.upper()}")
     logger.info(f"Policy Checkpoint: {checkpoint_path}")
     logger.info(f"Policy Device: {client_config.policy_device}")
     logger.info(f"Task: {client_config.task or 'No task specified'}")
-    logger.info(f"Cameras: {list(camera_configs.keys())}")
+    logger.info(f"Cameras ({len(camera_configs)}):")
+    for name, cfg in camera_configs.items():
+        logger.info(f"  - {name}: {cfg.serial_number_or_name} @ {cfg.width}x{cfg.height} {cfg.fps}fps" + 
+                   (f" (rotation: {cfg.rotation.value}°)" if hasattr(cfg, 'rotation') and cfg.rotation.value != 0 else ""))
     logger.info(f"Actions per Chunk: {client_config.actions_per_chunk}")
     logger.info(f"Chunk Size Threshold: {client_config.chunk_size_threshold}")
     logger.info(f"FPS: {client_config.fps}")

@@ -24,12 +24,27 @@ from ..config import RobotConfig
 @RobotConfig.register_subclass("franka_fr3")
 @dataclass
 class FrankaFR3Config(RobotConfig):
-    # Connection settings for Franka FR3
-    robot_ip: str = "172.16.0.2"  # Default Franka robot IP
+    # Joint names for Franka FR3 (7-DOF arm + gripper)
+    joint_names: list[str] = field(default_factory=lambda: [
+        "joint1", "joint2", "joint3", "joint4", 
+        "joint5", "joint6", "joint7", "gripper"
+    ])
     
-    # Disable torque on disconnect for safety
-    disable_torque_on_disconnect: bool = True
-
+    # ROS2 topic and action names
+    joint_trajectory_topic: str = "/fr3_arm_controller/joint_trajectory"
+    joint_state_topic: str = "/joint_states"
+    gripper_action_name: str = "/franka_gripper/grasp"
+    
+    # FrankaInterface control parameters
+    # alpha: Filter coefficient for position smoothing (0-1). Higher values = more aggressive tracking.
+    alpha: float = 0.95
+    # dt: Time step for trajectory execution (seconds)
+    dt: float = 0.1
+    # numb_duration: Debounce duration to prevent rapid gripper toggling (seconds)
+    numb_duration: float = 2.0
+    # grasp_threshold: Tuple of (close_threshold, open_threshold) for gripper width hysteresis
+    grasp_threshold: tuple[float, float] = (0.039, 0.038)
+    
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
     # Set this to a positive scalar to have the same value for all motors, or a dictionary that maps joint
     # names to the max_relative_target value for that joint.
@@ -37,9 +52,4 @@ class FrankaFR3Config(RobotConfig):
 
     # cameras
     cameras: dict[str, CameraConfig] = field(default_factory=dict)
-
-    # Control frequency in Hz
-    control_frequency: float = 250.0
     
-    # Whether to use degrees or radians for joint positions
-    use_degrees: bool = False
