@@ -127,7 +127,7 @@ def main():
     parser.add_argument(
         "--max_relative_target", 
         type=float, 
-        default=0.1,
+        default=0.05,
         help="Maximum relative joint movement per step for safety (robot-specific)"
     )
     
