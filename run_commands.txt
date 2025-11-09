@@ -14,3 +14,24 @@ python3 src/lerobot/scripts/lerobot_train.py \
   --eval_freq=0 \
   --wandb.enable=false \
   --policy.device=cuda
+
+python3 examples/franka_fr3_logos/deploy_policy_server.py \
+  --host 127.0.0.1 \
+  --port 8080 \
+  --fps 10 \
+  --similarity_atol 0.15
+
+python3 examples/franka_fr3_logos/deploy_robot_client.py \
+  --server_address 127.0.0.1:8080 \
+  --robot_id franka_fr3 \
+  --policy_type act \
+  --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last/pretrained_model \
+  --task 'pick up the soft toy and place it in the drawer' \
+  --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}" \
+  --actions_per_chunk 16 \
+  --chunk_size_threshold 0.5 \
+  --aggregate_fn_name "average" \
+  --max_relative_target 0.05 \
+  --fps 10 \
+  --debug_visualize_queue_size
+  # --dry_run   # optionally add this flag if you want a dry run
