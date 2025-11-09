@@ -118,7 +118,7 @@ def main():
     parser.add_argument(
         "--aggregate_fn_name", 
         type=str, 
-        default="weighted_average",
+        default="average",
         choices=["weighted_average", "latest_only", "average", "conservative"],
         help="Function to aggregate overlapping action chunks"
     )
