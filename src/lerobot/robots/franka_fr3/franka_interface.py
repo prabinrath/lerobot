@@ -71,6 +71,7 @@ from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,10 @@ class FrankaInterface(Node):
         self._spin_thread = threading.Thread(target=self._spin, daemon=True)
         self._spin_thread.start()
         
+        # prepare for rollout
+        self.grasp_open()
+        time.sleep(2.0) 
+
         logger.info(f"FrankaInterface initialized with node name: {node_name}")
 
     def _spin(self):

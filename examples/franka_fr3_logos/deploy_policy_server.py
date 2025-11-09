@@ -54,6 +54,12 @@ def main():
         default=10,
         help="Control frequency in frames per second (should match training data frequency)"
     )
+    parser.add_argument(
+        "--similarity_atol",
+        type=float,
+        default=1.0,
+        help="Joint-space L2 tolerance for skipping 'similar' observations (lower = more observations permitted)"
+    )
     
     args = parser.parse_args()
     
@@ -69,6 +75,7 @@ def main():
         host=args.host,
         port=args.port,
         fps=args.fps,
+        similarity_atol=args.similarity_atol,
     )
     
     logger.info("="*60)
@@ -78,6 +85,7 @@ def main():
     logger.info(f"Port: {config.port}")
     logger.info(f"FPS: {config.fps}")
     logger.info(f"Environment dt: {config.environment_dt:.4f}s")
+    logger.info(f"Similarity atol: {config.similarity_atol}")
     logger.info("="*60)
     logger.info("Server is ready. Waiting for Franka robot client connection...")
     logger.info("The policy will be loaded when the first client connects.")

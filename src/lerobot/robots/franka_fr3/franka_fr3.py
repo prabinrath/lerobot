@@ -181,7 +181,7 @@ class FrankaFR3(Robot):
         
         # Get camera images
         for cam_name, cam in self.cameras.items():
-            observation[cam_name] = cam.capture()
+            observation[cam_name] = cam.async_read()
             
         return observation
 
