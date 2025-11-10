@@ -22,18 +22,22 @@ to LeRobot format suitable for training policies.
 
 Usage:
     python convert_h5_to_lerobot.py --h5_path path/to/dataset.h5 --output_dir path/to/output --repo_id my_dataset
+    
+    # For EE space conversion:
+    python convert_h5_to_lerobot.py --h5_path path/to/dataset.h5 --output_dir path/to/output --repo_id my_dataset \
+        --use_ee --urdf_path ../../src/lerobot/robots/franka_fr3/franka_fr3.urdf --ee_frame_name fr3_hand_tcp
 """
 
 import argparse
 import logging
-import time
 from pathlib import Path
 
 import h5py
 import numpy as np
-from PIL import Image
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.model.kinematics import RobotKinematics
+from lerobot.utils.rotation import Rotation
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 def define_franka_fr3_features():
-    """Define the features for Franka FR3 robot dataset."""
+    """Define the features for Franka FR3 robot dataset (joint space)."""
     return {
         # Robot state observations (7 joint positions + gripper state)
         "observation.state": {
@@ -73,6 +77,39 @@ def define_franka_fr3_features():
     }
 
 
+def define_franka_fr3_ee_features():
+    """Define the features for Franka FR3 robot dataset (end-effector space)."""
+    return {
+        # Robot state observations (EE pose: x, y, z, wx, wy, wz + gripper state)
+        "observation.state": {
+            "dtype": "float32",
+            "shape": (7,),
+            "names": {
+                "axes": ["x", "y", "z", "wx", "wy", "wz", "gripper"],
+            },
+        },
+        # Camera observations
+        "observation.images.front_img": {
+            "dtype": "image",
+            "shape": (96, 96, 3),
+            "names": ["height", "width", "channels"],
+        },
+        "observation.images.wrist_img": {
+            "dtype": "image", 
+            "shape": (96, 96, 3),
+            "names": ["height", "width", "channels"],
+        },
+        # Actions (EE pose targets: x, y, z, wx, wy, wz + gripper target)
+        "action": {
+            "dtype": "float32",
+            "shape": (7,),
+            "names": {
+                "axes": ["x", "y", "z", "wx", "wy", "wz", "gripper"],
+            },
+        },
+    }
+
+
 def extract_joint_positions_from_h5(joint_states):
     """
     Extract joint positions and gripper state from the H5 joint_states data.
@@ -91,7 +128,52 @@ def extract_joint_positions_from_h5(joint_states):
     return np.column_stack([joint_positions, gripper_values])  # Shape: (timesteps, 8)
 
 
-def convert_h5_to_lerobot(h5_path: str, output_dir: str, repo_id: str, fps: int = 10):
+def convert_joints_to_ee(joint_positions: np.ndarray, kinematics: RobotKinematics) -> np.ndarray:
+    """
+    Convert joint positions to end-effector poses using forward kinematics.
+    
+    Args:
+        joint_positions: Array of shape (timesteps, 8) containing 7 joint positions + gripper
+        kinematics: RobotKinematics instance for FK computation
+        
+    Returns:
+        Array of shape (timesteps, 7) containing [x, y, z, wx, wy, wz, gripper]
+    """
+    num_timesteps = len(joint_positions)
+    ee_poses = np.zeros((num_timesteps, 7), dtype=np.float32)
+    
+    for i in range(num_timesteps):
+        # Extract joint positions (first 7 values, excluding gripper)
+        joints = joint_positions[i, :7]
+        
+        # Compute forward kinematics -> returns 4x4 transformation matrix
+        # Note: RobotKinematics expects joint positions in degrees
+        ee_transform = kinematics.forward_kinematics(np.rad2deg(joints))
+        
+        # Extract position (x, y, z) from translation part
+        ee_poses[i, 0:3] = ee_transform[:3, 3]
+        
+        # Extract orientation as rotation vector (wx, wy, wz)
+        rotation_matrix = ee_transform[:3, :3]
+        rotation = Rotation.from_matrix(rotation_matrix)
+        ee_poses[i, 3:6] = rotation.as_rotvec()
+        
+        # Preserve gripper value
+        ee_poses[i, 6] = joint_positions[i, 7]
+    
+    return ee_poses
+
+
+def convert_h5_to_lerobot(
+    h5_path: str,
+    output_dir: str,
+    repo_id: str,
+    fps: int = 10,
+    use_ee: bool = False,
+    urdf_path: str | None = None,
+    ee_frame_name: str = "fr3_hand_tcp",
+    joint_names: list[str] | None = None,
+):
     """
     Convert H5 dataset to LeRobot format.
     
@@ -100,13 +182,46 @@ def convert_h5_to_lerobot(h5_path: str, output_dir: str, repo_id: str, fps: int 
         output_dir: Directory to save the converted dataset
         repo_id: Repository ID for the dataset
         fps: Frames per second for the dataset
+        use_ee: Whether to convert to end-effector space (default: False for joint space)
+        urdf_path: Path to robot URDF file (required if use_ee=True)
+        ee_frame_name: Name of the end-effector frame in URDF (default: "fr3_hand_tcp")
+        joint_names: List of joint names for FK (default: None, uses all joints)
     """
     logger.info(f"Converting H5 dataset from {h5_path} to LeRobot format")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Repository ID: {repo_id}")
+    logger.info(f"Use end-effector space: {use_ee}")
     
-    # Define features for Franka FR3
-    features = define_franka_fr3_features()
+    # Initialize kinematics if using EE space
+    kinematics = None
+    if use_ee:
+        if urdf_path is None:
+            raise ValueError("--urdf_path is required when --use_ee is True")
+        
+        logger.info(f"Initializing kinematics with URDF: {urdf_path}")
+        logger.info(f"End-effector frame: {ee_frame_name}")
+        
+        if joint_names is None:
+            # Default joint names for Franka FR3
+            joint_names = [
+                "fr3_joint1", "fr3_joint2", "fr3_joint3", "fr3_joint4",
+                "fr3_joint5", "fr3_joint6", "fr3_joint7"
+            ]
+        logger.info(f"Joint names: {joint_names}")
+        
+        kinematics = RobotKinematics(
+            urdf_path=urdf_path,
+            target_frame_name=ee_frame_name,
+            joint_names=joint_names,
+        )
+    
+    # Define features based on space (joint or EE)
+    if use_ee:
+        features = define_franka_fr3_ee_features()
+        logger.info("Using end-effector space features")
+    else:
+        features = define_franka_fr3_features()
+        logger.info("Using joint space features")
     
     # Create LeRobot dataset
     dataset = LeRobotDataset.create(
@@ -138,6 +253,11 @@ def convert_h5_to_lerobot(h5_path: str, output_dir: str, repo_id: str, fps: int 
             
             # Extract joint positions and gripper state (now combined)
             observation_state = extract_joint_positions_from_h5(joint_states)
+            
+            # Convert to EE space if requested
+            if use_ee:
+                logger.info(f"Converting joint positions to EE poses for episode {episode_idx}")
+                observation_state = convert_joints_to_ee(observation_state, kinematics)
             
             episode_length = len(front_imgs)
             logger.info(f"Episode {episode_idx} has {episode_length} frames")
@@ -201,6 +321,30 @@ def main():
         default=10,
         help="Frames per second for the dataset"
     )
+    parser.add_argument(
+        "--use_ee",
+        action="store_true",
+        help="Convert to end-effector space instead of joint space"
+    )
+    parser.add_argument(
+        "--urdf_path",
+        type=str,
+        default=None,
+        help="Path to robot URDF file (required if --use_ee is True)"
+    )
+    parser.add_argument(
+        "--ee_frame_name",
+        type=str,
+        default="fr3_hand_tcp",
+        help="Name of the end-effector frame in URDF (default: fr3_hand_tcp)"
+    )
+    parser.add_argument(
+        "--joint_names",
+        type=str,
+        nargs="+",
+        default=None,
+        help="List of joint names for FK computation (default: panda_joint1-7)"
+    )
     
     args = parser.parse_args()
     
@@ -209,12 +353,25 @@ def main():
     if not h5_path.exists():
         raise FileNotFoundError(f"H5 file not found: {h5_path}")
     
+    # Validate EE-related arguments
+    if args.use_ee and args.urdf_path is None:
+        raise ValueError("--urdf_path is required when --use_ee is True")
+    
+    if args.use_ee and args.urdf_path:
+        urdf_path = Path(args.urdf_path)
+        if not urdf_path.exists():
+            raise FileNotFoundError(f"URDF file not found: {urdf_path}")
+    
     # Convert dataset
     convert_h5_to_lerobot(
         h5_path=str(h5_path),
         output_dir=args.output_dir,
         repo_id=args.repo_id,
-        fps=args.fps
+        fps=args.fps,
+        use_ee=args.use_ee,
+        urdf_path=args.urdf_path,
+        ee_frame_name=args.ee_frame_name,
+        joint_names=args.joint_names,
     )
 
 

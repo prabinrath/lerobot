@@ -1,0 +1,107 @@
+<?xml version="1.0" ?>
+<!-- Simplified Franka FR3 URDF for kinematics only -->
+<robot name="fr3">
+  <link name="base"/>
+  
+  <joint name="fr3_base_joint" type="fixed">
+    <parent link="base"/>
+    <child link="fr3_link0"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+  </joint>
+  
+  <link name="fr3_link0"/>
+  
+  <joint name="fr3_joint1" type="revolute">
+    <origin rpy="0 0 0" xyz="0 0 0.333"/>
+    <parent link="fr3_link0"/>
+    <child link="fr3_link1"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="87.0" lower="-2.7437" upper="2.7437" velocity="2.62"/>
+  </joint>
+  
+  <link name="fr3_link1"/>
+  
+  <joint name="fr3_joint2" type="revolute">
+    <origin rpy="-1.570796326794897 0 0" xyz="0 0 0"/>
+    <parent link="fr3_link1"/>
+    <child link="fr3_link2"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="87.0" lower="-1.7837" upper="1.7837" velocity="2.62"/>
+  </joint>
+  
+  <link name="fr3_link2"/>
+  
+  <joint name="fr3_joint3" type="revolute">
+    <origin rpy="1.570796326794897 0 0" xyz="0 -0.316 0"/>
+    <parent link="fr3_link2"/>
+    <child link="fr3_link3"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="87.0" lower="-2.9007" upper="2.9007" velocity="2.62"/>
+  </joint>
+  
+  <link name="fr3_link3"/>
+  
+  <joint name="fr3_joint4" type="revolute">
+    <origin rpy="1.570796326794897 0 0" xyz="0.0825 0 0"/>
+    <parent link="fr3_link3"/>
+    <child link="fr3_link4"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="87.0" lower="-3.0421" upper="-0.1518" velocity="2.62"/>
+  </joint>
+  
+  <link name="fr3_link4"/>
+  
+  <joint name="fr3_joint5" type="revolute">
+    <origin rpy="-1.570796326794897 0 0" xyz="-0.0825 0.384 0"/>
+    <parent link="fr3_link4"/>
+    <child link="fr3_link5"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="12.0" lower="-2.8065" upper="2.8065" velocity="5.26"/>
+  </joint>
+  
+  <link name="fr3_link5"/>
+  
+  <joint name="fr3_joint6" type="revolute">
+    <origin rpy="1.570796326794897 0 0" xyz="0 0 0"/>
+    <parent link="fr3_link5"/>
+    <child link="fr3_link6"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="12.0" lower="0.5445" upper="4.5169" velocity="4.18"/>
+  </joint>
+  
+  <link name="fr3_link6"/>
+  
+  <joint name="fr3_joint7" type="revolute">
+    <origin rpy="1.570796326794897 0 0" xyz="0.088 0 0"/>
+    <parent link="fr3_link6"/>
+    <child link="fr3_link7"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="12.0" lower="-3.0159" upper="3.0159" velocity="5.26"/>
+  </joint>
+  
+  <link name="fr3_link7"/>
+  
+  <joint name="fr3_joint8" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.107"/>
+    <parent link="fr3_link7"/>
+    <child link="fr3_link8"/>
+  </joint>
+  
+  <link name="fr3_link8"/>
+  
+  <joint name="fr3_hand_joint" type="fixed">
+    <parent link="fr3_link8"/>
+    <child link="fr3_hand"/>
+    <origin rpy="0 0 -0.7853981633974483" xyz="0 0 0"/>
+  </joint>
+  
+  <link name="fr3_hand"/>
+  
+  <joint name="fr3_hand_tcp_joint" type="fixed">
+    <origin rpy="0 0 0" xyz="0 0 0.1034"/>
+    <parent link="fr3_hand"/>
+    <child link="fr3_hand_tcp"/>
+  </joint>
+  
+  <link name="fr3_hand_tcp"/>
+</robot>

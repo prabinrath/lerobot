@@ -1,3 +1,13 @@
+python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
+    --h5_path /mount/scratch4/prabin/codig_robot_datasets/softtoy_in_drawer.h5 \
+    --output_dir ./datasets/franka_fr3_softtoy_in_drawer_ee \
+    --repo_id franka_fr3/softtoy_in_drawer_ee \
+    --use_ee \
+    --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
+    --ee_frame_name fr3_hand_tcp
+
+lerobot-dataset-viz --repo-id franka_fr3_softtoy_in_drawer_ee --root ./datasets/franka_fr3_softtoy_in_drawer_ee --episode-index 0
+
 python3 src/lerobot/scripts/lerobot_train.py \
   --dataset.root=/home/local/ASUAD/prath4/Repos/lerobot/datasets/franka_fr3_softtoy_in_drawer \
   --dataset.repo_id=franka_fr3_softtoy_in_drawer \
