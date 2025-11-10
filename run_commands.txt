@@ -25,6 +25,25 @@ python3 src/lerobot/scripts/lerobot_train.py \
   --wandb.enable=false \
   --policy.device=cuda
 
+lerobot-train \
+  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --policy.type=diffusion \
+  --policy.n_obs_steps=2 \
+  --policy.horizon=16 \
+  --policy.n_action_steps=8 \
+  --policy.noise_scheduler_type=DDIM \
+  --policy.push_to_hub=false \
+  --output_dir=outputs/train/diffusion_franka_fr3_softtoy \
+  --job_name=diffusion_franka_fr3_softtoy \
+  --steps=100000 \
+  --batch_size=64 \
+  --log_freq=250 \
+  --save_freq=5000 \
+  --eval_freq=0 \
+  --wandb.enable=false \
+  --policy.device=cuda
+
 python3 examples/franka_fr3_logos/deploy_policy_server.py \
   --host 127.0.0.1 \
   --port 8080 \
