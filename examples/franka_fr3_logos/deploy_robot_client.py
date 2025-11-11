@@ -21,12 +21,8 @@ Example (with RealSense cameras):
 import argparse
 import ast
 import logging
-import threading
 from pathlib import Path
 
-from lerobot.async_inference.configs import RobotClientConfig
-from lerobot.async_inference.helpers import visualize_action_queue_size
-from lerobot.async_inference.robot_client import RobotClient
 from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
@@ -131,6 +127,13 @@ def main():
         help="Maximum relative joint movement per step for safety (robot-specific)"
     )
     
+    # Inference mode
+    parser.add_argument(
+        "--use_sync_inference", 
+        action="store_true",
+        help="Use synchronous inference (run policy locally) instead of async server. Recommended for diffusion policy until async issues are fixed."
+    )
+    
     # Debug options
     parser.add_argument(
         "--debug_visualize_queue_size", 
@@ -190,6 +193,55 @@ def main():
     if args.max_relative_target is not None:
         robot_config.max_relative_target = args.max_relative_target
     
+    # Print configuration summary
+    logger.info("="*70)
+    logger.info("Franka FR3 Policy Deployment Client")
+    logger.info("="*70)
+    logger.info(f"Robot ID: {robot_config.id}")
+    logger.info(f"Policy Type: {args.policy_type.upper()}")
+    logger.info(f"Policy Checkpoint: {checkpoint_path}")
+    logger.info(f"Policy Device: {args.policy_device}")
+    logger.info(f"Task: {args.task or 'No task specified'}")
+    logger.info(f"Cameras ({len(camera_configs)}):")
+    for name, cfg in camera_configs.items():
+        logger.info(f"  - {name}: {cfg.serial_number_or_name} @ {cfg.width}x{cfg.height} {cfg.fps}fps" + 
+                   (f" (rotation: {cfg.rotation.value}°)" if hasattr(cfg, 'rotation') and cfg.rotation.value != 0 else ""))
+    
+    if not args.use_sync_inference:
+        logger.info(f"Server Address: {args.server_address}")
+        logger.info(f"Actions per Chunk: {args.actions_per_chunk}")
+        logger.info(f"Chunk Size Threshold: {args.chunk_size_threshold}")
+        logger.info(f"Aggregate Function: {args.aggregate_fn_name}")
+    
+    logger.info(f"FPS: {args.fps}")
+    logger.info(f"Max Relative Target: {getattr(robot_config, 'max_relative_target', 'Not set')}")
+    logger.info("="*70)
+    
+    if args.dry_run:
+        logger.info("DRY RUN MODE: Configuration validated successfully!")
+        logger.info("Remove --dry_run flag to actually connect to the robot.")
+        return 0
+    
+    # Choose inference mode
+    if args.use_sync_inference:
+        logger.info("Using SYNCHRONOUS INFERENCE mode (policy runs locally)")
+        return run_sync_inference(robot_config, checkpoint_path, args)
+    else:
+        logger.info("Using ASYNC INFERENCE mode (policy runs on server)")
+        return run_async_inference(robot_config, checkpoint_path, args)
+
+
+def run_async_inference(robot_config, checkpoint_path, args):
+    """Run with async inference (policy server)
+       Note: Policies with n_obs_steps > 1 are not yet supported for Async inference
+             as the policy server does not manage the observation queue properly. affected
+             policies are (DP, VQ-BeT)
+    """
+    import threading
+    from lerobot.async_inference.configs import RobotClientConfig
+    from lerobot.async_inference.helpers import visualize_action_queue_size
+    from lerobot.async_inference.robot_client import RobotClient
+    
     # Create client configuration
     client_config = RobotClientConfig(
         robot=robot_config,
@@ -204,32 +256,6 @@ def main():
         aggregate_fn_name=args.aggregate_fn_name,
         debug_visualize_queue_size=args.debug_visualize_queue_size,
     )
-    
-    # Print configuration summary
-    logger.info("="*70)
-    logger.info("Franka FR3 Policy Deployment Client")
-    logger.info("="*70)
-    logger.info(f"Server Address: {client_config.server_address}")
-    logger.info(f"Robot ID: {robot_config.id}")
-    logger.info(f"Policy Type: {client_config.policy_type.upper()}")
-    logger.info(f"Policy Checkpoint: {checkpoint_path}")
-    logger.info(f"Policy Device: {client_config.policy_device}")
-    logger.info(f"Task: {client_config.task or 'No task specified'}")
-    logger.info(f"Cameras ({len(camera_configs)}):")
-    for name, cfg in camera_configs.items():
-        logger.info(f"  - {name}: {cfg.serial_number_or_name} @ {cfg.width}x{cfg.height} {cfg.fps}fps" + 
-                   (f" (rotation: {cfg.rotation.value}°)" if hasattr(cfg, 'rotation') and cfg.rotation.value != 0 else ""))
-    logger.info(f"Actions per Chunk: {client_config.actions_per_chunk}")
-    logger.info(f"Chunk Size Threshold: {client_config.chunk_size_threshold}")
-    logger.info(f"FPS: {client_config.fps}")
-    logger.info(f"Max Relative Target: {getattr(robot_config, 'max_relative_target', 'Not set')}")
-    logger.info(f"Aggregate Function: {client_config.aggregate_fn_name}")
-    logger.info("="*70)
-    
-    if args.dry_run:
-        logger.info("DRY RUN MODE: Configuration validated successfully!")
-        logger.info("Remove --dry_run flag to actually connect to the robot.")
-        return 0
     
     # Create and start robot client
     client = RobotClient(client_config)
@@ -270,5 +296,144 @@ def main():
     return 0
 
 
+def add_resize_processor_if_needed(preprocessor, policy_config, robot_config):
+    """Add resize processor if camera dimensions don't match policy expectations.
+    
+    Args:
+        preprocessor: The policy preprocessor pipeline
+        policy_config: Policy configuration with input_features
+        robot_config: Robot configuration with camera configs
+    """
+    from lerobot.processor.hil_processor import ImageCropResizeProcessorStep
+    
+    # Check if resize processor already exists
+    has_resize_processor = any(
+        isinstance(step, ImageCropResizeProcessorStep) for step in preprocessor.steps
+    )
+    
+    if has_resize_processor:
+        logger.info("Resize processor already present in preprocessor pipeline")
+        return
+    
+    # Get expected image dimensions from policy config
+    expected_dims = {}
+    for key, feature in policy_config.input_features.items():
+        if feature.type == "VISUAL" and "images" in key:
+            camera_name = key.split(".")[-1]
+            expected_dims[camera_name] = (feature.shape[1], feature.shape[2])  # (H, W)
+    
+    # Get actual camera dimensions from robot config
+    needs_resize = False
+    for camera_name, camera_config in robot_config.cameras.items():
+        if camera_name in expected_dims:
+            expected_h, expected_w = expected_dims[camera_name]
+            actual_h, actual_w = camera_config.height, camera_config.width
+            
+            if (actual_h, actual_w) != (expected_h, expected_w):
+                logger.info(
+                    f"Camera '{camera_name}': actual size ({actual_w}x{actual_h}) != "
+                    f"expected size ({expected_w}x{expected_h})"
+                )
+                needs_resize = True
+    
+    if not needs_resize:
+        logger.info("Camera dimensions match policy expectations, no resize needed")
+        return
+    
+    resize_size = next(iter(expected_dims.values()))  # All cameras should have same size
+    resize_processor = ImageCropResizeProcessorStep(resize_size=resize_size)
+    
+    # Find insertion point (after to_batch, before device)
+    insert_idx = None
+    for idx, step in enumerate(preprocessor.steps):
+        step_name = getattr(step.__class__, "_registry_name", "")
+        if step_name == "to_batch_processor":
+            insert_idx = idx + 1
+            break
+    
+    if insert_idx is not None:
+        preprocessor.steps.insert(insert_idx, resize_processor)
+        logger.info(f"Added resize processor to pipeline at index {insert_idx} with size {resize_size}")
+    else:
+        # Fallback: insert at beginning if to_batch not found
+        preprocessor.steps.insert(0, resize_processor)
+        logger.info(f"Added resize processor at beginning of pipeline with size {resize_size}")
+
+
+def run_sync_inference(robot_config, checkpoint_path, args):
+    """Run with synchronous inference (policy runs locally)
+    
+    Based on examples/tutorial/diffusion/diffusion_using_example.py
+    """
+    import time
+    import torch
+    from lerobot.policies.factory import get_policy_class, make_pre_post_processors
+    from lerobot.policies.utils import build_inference_frame, make_robot_action
+    from lerobot.robots.utils import make_robot_from_config
+    from lerobot.datasets.utils import hw_to_dataset_features
+    from lerobot.utils.constants import ACTION, OBS_STR
+    
+    device = torch.device(args.policy_device)
+    
+    # Load policy
+    logger.info(f"Loading {args.policy_type} policy from {checkpoint_path}...")
+    policy = get_policy_class(args.policy_type).from_pretrained(str(checkpoint_path))
+    policy.to(device)
+    policy.eval()
+    
+    # Load preprocessor and postprocessor, overriding device to match requested device
+    device_override = {"device": device}
+    preprocess, postprocess = make_pre_post_processors(
+        policy.config,
+        pretrained_path=str(checkpoint_path),
+        preprocessor_overrides={
+            "device_processor": device_override,
+        },
+        postprocessor_overrides={"device_processor": device_override},
+    )
+    
+    # Check if camera resolutions match policy expectations and add resize processor if needed
+    add_resize_processor_if_needed(preprocess, policy.config, robot_config)
+    
+    # Initialize robot
+    logger.info("Connecting to robot...")
+    robot = make_robot_from_config(robot_config)
+    robot.connect()
+    logger.info("Robot connected! Starting control loop (Ctrl+C to stop)...")
+    action_features = hw_to_dataset_features(robot.action_features, ACTION)
+    obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR)
+    dataset_features = {**action_features, **obs_features}
+
+    try:
+        dt = 1.0 / args.fps
+        while True:
+            start_time = time.perf_counter()
+            
+            obs = robot.get_observation()
+            obs_frame = build_inference_frame(
+                observation=obs, ds_features=dataset_features, device=device
+            )
+            
+            obs = preprocess(obs_frame)
+            action = policy.select_action(obs)
+            action = postprocess(action)
+            action = make_robot_action(action, dataset_features)
+            
+            robot.send_action(action)
+            
+            # Maintain control frequency
+            elapsed = time.perf_counter() - start_time
+            if elapsed < dt:
+                time.sleep(dt - elapsed)
+        
+    except KeyboardInterrupt:
+        logger.info("Stopping robot...")
+    finally:
+        robot.disconnect()
+    
+    return 0
+
+
 if __name__ == "__main__":
     exit(main())
+

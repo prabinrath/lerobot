@@ -31,8 +31,9 @@ lerobot-train \
   --policy.type=diffusion \
   --policy.n_obs_steps=2 \
   --policy.horizon=16 \
-  --policy.n_action_steps=8 \
+  --policy.n_action_steps=16 \
   --policy.noise_scheduler_type=DDIM \
+  --policy.crop_shape=null \
   --policy.push_to_hub=false \
   --output_dir=outputs/train/diffusion_franka_fr3_softtoy \
   --job_name=diffusion_franka_fr3_softtoy \
