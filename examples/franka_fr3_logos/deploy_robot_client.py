@@ -3,19 +3,32 @@
 """
 Franka FR3 Robot Client for Policy Deployment
 
-This script connects to your Franka FR3 robot and communicates with the policy server
-to execute your trained policy (ACT, Diffusion, VQ-BeT, SmolVLA, GROOT, PI0, PI05) asynchronously.
+This script connects to your Franka FR3 robot and executes your trained policy 
+(ACT, Diffusion, VQ-BeT, SmolVLA, GROOT, PI0, PI05) either synchronously (locally) 
+or asynchronously (via policy server).
 
+Inference Modes:
+    - Async (default): Policy runs on a remote server
+    - Sync (--use_sync_inference): Policy runs locally
 Usage:
     python deploy_robot_client.py [OPTIONS]
 
-Example (with RealSense cameras):
+Example (async):
     python deploy_robot_client.py \
         --server_address 127.0.0.1:8080 \
         --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last \
         --policy_type act \
         --task "pick up the soft toy and place it in the drawer" \
         --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}"
+
+Example (sync):
+    python deploy_robot_client.py \
+        --use_sync_inference \
+        --checkpoint_path outputs/train/diffusion_franka_fr3_softtoy/checkpoints/last \
+        --policy_type diffusion \
+        --task "pick up the soft toy and place it in the drawer" \
+        --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}" \
+        --fps 10
 """
 
 import argparse
@@ -27,15 +40,16 @@ from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
 
 def main():
+    # Set up logger for main function
+    logger = logging.getLogger("deploy_robot_client")
+    logger.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(console_handler)
+    logger.propagate = False
+    
     parser = argparse.ArgumentParser(
         description="Start Franka FR3 robot client for policy deployment (supports ACT, Diffusion, VQ-BeT, SmolVLA, GROOT, PI0, PI05)",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -225,17 +239,23 @@ def main():
     # Choose inference mode
     if args.use_sync_inference:
         logger.info("Using SYNCHRONOUS INFERENCE mode (policy runs locally)")
-        return run_sync_inference(robot_config, checkpoint_path, args)
+        return run_sync_inference(robot_config, checkpoint_path, args, logger)
     else:
         logger.info("Using ASYNC INFERENCE mode (policy runs on server)")
-        return run_async_inference(robot_config, checkpoint_path, args)
+        return run_async_inference(robot_config, checkpoint_path, args, logger)
 
 
-def run_async_inference(robot_config, checkpoint_path, args):
+def run_async_inference(robot_config, checkpoint_path, args, logger):
     """Run with async inference (policy server)
        Note: Policies with n_obs_steps > 1 are not yet supported for Async inference
              as the policy server does not manage the observation queue properly. affected
              policies are (DP, VQ-BeT)
+    
+    Args:
+        robot_config: Robot configuration
+        checkpoint_path: Path to policy checkpoint
+        args: Command line arguments
+        logger: Logger instance to use
     """
     import threading
     from lerobot.async_inference.configs import RobotClientConfig
@@ -296,13 +316,14 @@ def run_async_inference(robot_config, checkpoint_path, args):
     return 0
 
 
-def add_resize_processor_if_needed(preprocessor, policy_config, robot_config):
+def add_resize_processor_if_needed(preprocessor, policy_config, robot_config, logger):
     """Add resize processor if camera dimensions don't match policy expectations.
     
     Args:
         preprocessor: The policy preprocessor pipeline
         policy_config: Policy configuration with input_features
         robot_config: Robot configuration with camera configs
+        logger: Logger instance to use
     """
     from lerobot.processor.hil_processor import ImageCropResizeProcessorStep
     
@@ -360,10 +381,16 @@ def add_resize_processor_if_needed(preprocessor, policy_config, robot_config):
         logger.info(f"Added resize processor at beginning of pipeline with size {resize_size}")
 
 
-def run_sync_inference(robot_config, checkpoint_path, args):
+def run_sync_inference(robot_config, checkpoint_path, args, logger):
     """Run with synchronous inference (policy runs locally)
     
     Based on examples/tutorial/diffusion/diffusion_using_example.py
+    
+    Args:
+        robot_config: Robot configuration
+        checkpoint_path: Path to policy checkpoint
+        args: Command line arguments
+        logger: Logger instance to use
     """
     import time
     import torch
@@ -393,7 +420,7 @@ def run_sync_inference(robot_config, checkpoint_path, args):
     )
     
     # Check if camera resolutions match policy expectations and add resize processor if needed
-    add_resize_processor_if_needed(preprocess, policy.config, robot_config)
+    add_resize_processor_if_needed(preprocess, policy.config, robot_config, logger)
     
     # Initialize robot
     logger.info("Connecting to robot...")
@@ -430,6 +457,7 @@ def run_sync_inference(robot_config, checkpoint_path, args):
         logger.info("Stopping robot...")
     finally:
         robot.disconnect()
+        logger.info("Robot disconnected successfully.")
     
     return 0
 
