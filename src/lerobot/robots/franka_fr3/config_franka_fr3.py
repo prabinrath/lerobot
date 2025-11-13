@@ -30,6 +30,13 @@ class FrankaFR3Config(RobotConfig):
         "joint5", "joint6", "joint7", "gripper"
     ])
     
+    # End-effector space configuration
+    use_ee: bool = False  # Whether to use end-effector space instead of joint space
+    # EE state names (6-DOF axis angle + gripper)
+    ee_names: list[str] = field(default_factory=lambda: [
+        "x", "y", "z", "wx", "wy", "wz", "gripper"
+    ])
+    
     # ROS2 topic and action names
     joint_trajectory_topic: str = "/fr3_arm_controller/joint_trajectory"
     joint_state_topic: str = "/joint_states"

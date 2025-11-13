@@ -20,12 +20,18 @@ Convert H5 dataset to LeRobot format for Franka FR3 robot.
 This script converts an H5 dataset containing robot demonstrations
 to LeRobot format suitable for training policies.
 
+NOTE: This conversion assumes quasistatic motion where the robot closely tracks 
+commanded positions. Actions are derived from the next observation state, which 
+approximates the commanded target position. This is valid for position-controlled 
+robots with good tracking performance but may not capture dynamics, delays, or 
+tracking errors present in the original commands.
+
 Usage:
     python convert_h5_to_lerobot.py --h5_path path/to/dataset.h5 --output_dir path/to/output --repo_id my_dataset
+    For EE space conversion add these args: --use_ee --urdf_path ../../src/lerobot/robots/franka_fr3/franka_fr3.urdf --ee_frame_name fr3_hand_tcp
     
-    # For EE space conversion:
-    python convert_h5_to_lerobot.py --h5_path path/to/dataset.h5 --output_dir path/to/output --repo_id my_dataset \
-        --use_ee --urdf_path ../../src/lerobot/robots/franka_fr3/franka_fr3.urdf --ee_frame_name fr3_hand_tcp
+    Language annotations are automatically loaded from a .txt file with the same name as the h5 file
+    For example, if h5_path is "dataset.h5", it will look for "dataset.txt" in the same directory
 """
 
 import argparse
@@ -35,8 +41,14 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from lerobot.cameras.configs import Cv2Rotation
+from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
+from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.model.kinematics import RobotKinematics
+from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
+from lerobot.robots.utils import make_robot_from_config
+from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.rotation import Rotation
 
 # Configure logging
@@ -44,70 +56,29 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def define_franka_fr3_features():
-    """Define the features for Franka FR3 robot dataset (joint space)."""
-    return {
-        # Robot state observations (7 joint positions + gripper state)
-        "observation.state": {
-            "dtype": "float32",
-            "shape": (8,),
-            "names": {
-                "axes": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7", "gripper"],
-            },
-        },
-        # Camera observations
-        "observation.images.front_img": {
-            "dtype": "image",
-            "shape": (96, 96, 3),
-            "names": ["height", "width", "channels"],  # Use list format for backward compatibility
-        },
-        "observation.images.wrist_img": {
-            "dtype": "image", 
-            "shape": (96, 96, 3),
-            "names": ["height", "width", "channels"],  # Use list format for backward compatibility
-        },
-        # Actions (7 joint targets + gripper target)
-        "action": {
-            "dtype": "float32",
-            "shape": (8,),
-            "names": {
-                "axes": ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7", "gripper"],
-            },
-        },
+def create_robot_config(use_ee: bool = False):
+    """Create robot configuration with camera settings matching H5 data (96x96 images)."""
+    # Camera configuration matching H5 data dimensions
+    camera_configs = {
+        "front_img": RealSenseCameraConfig(
+            serial_number_or_name="938422074102",
+            width=96,
+            height=96,
+            fps=10,
+        ),
+        "wrist_img": RealSenseCameraConfig(
+            serial_number_or_name="919122070360",
+            width=96,
+            height=96,
+            fps=10,
+        ),
     }
-
-
-def define_franka_fr3_ee_features():
-    """Define the features for Franka FR3 robot dataset (end-effector space)."""
-    return {
-        # Robot state observations (EE pose: x, y, z, wx, wy, wz + gripper state)
-        "observation.state": {
-            "dtype": "float32",
-            "shape": (7,),
-            "names": {
-                "axes": ["x", "y", "z", "wx", "wy", "wz", "gripper"],
-            },
-        },
-        # Camera observations
-        "observation.images.front_img": {
-            "dtype": "image",
-            "shape": (96, 96, 3),
-            "names": ["height", "width", "channels"],
-        },
-        "observation.images.wrist_img": {
-            "dtype": "image", 
-            "shape": (96, 96, 3),
-            "names": ["height", "width", "channels"],
-        },
-        # Actions (EE pose targets: x, y, z, wx, wy, wz + gripper target)
-        "action": {
-            "dtype": "float32",
-            "shape": (7,),
-            "names": {
-                "axes": ["x", "y", "z", "wx", "wy", "wz", "gripper"],
-            },
-        },
-    }
+    
+    return FrankaFR3Config(
+        id="franka_fr3",
+        cameras=camera_configs,
+        use_ee=use_ee,
+    )
 
 
 def extract_joint_positions_from_h5(joint_states):
@@ -173,6 +144,7 @@ def convert_h5_to_lerobot(
     urdf_path: str | None = None,
     ee_frame_name: str = "fr3_hand_tcp",
     joint_names: list[str] | None = None,
+    task_name: str | None = None,
 ):
     """
     Convert H5 dataset to LeRobot format.
@@ -186,11 +158,34 @@ def convert_h5_to_lerobot(
         urdf_path: Path to robot URDF file (required if use_ee=True)
         ee_frame_name: Name of the end-effector frame in URDF (default: "fr3_hand_tcp")
         joint_names: List of joint names for FK (default: None, uses all joints)
+        task_name: Default task name if language file is not found (default: None, uses h5 filename)
     """
     logger.info(f"Converting H5 dataset from {h5_path} to LeRobot format")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Repository ID: {repo_id}")
     logger.info(f"Use end-effector space: {use_ee}")
+    
+    # Automatically look for language descriptions file with same name as h5 file
+    language_descriptions = None
+    h5_file_path = Path(h5_path)
+    language_file_path = h5_file_path.with_suffix('.txt')
+    
+    # Use h5 filename (without extension) as default task name if not provided
+    if task_name is None:
+        task_name = h5_file_path.stem
+    
+    if language_file_path.exists():
+        logger.info(f"Found language file: {language_file_path}")
+        with open(language_file_path, 'r') as f:
+            language_descriptions = [line.strip() for line in f if line.strip()]
+        
+        if len(language_descriptions) == 0:
+            logger.warning(f"Language file {language_file_path} is empty. Using default task name: '{task_name}'")
+        else:
+            logger.info(f"Loaded {len(language_descriptions)} language descriptions from {language_file_path}")
+            logger.info(f"Language descriptions: {language_descriptions}")
+    else:
+        logger.info(f"No language file found at {language_file_path}. Using default task name: '{task_name}'")
     
     # Initialize kinematics if using EE space
     kinematics = None
@@ -215,13 +210,32 @@ def convert_h5_to_lerobot(
             joint_names=joint_names,
         )
     
-    # Define features based on space (joint or EE)
-    if use_ee:
-        features = define_franka_fr3_ee_features()
-        logger.info("Using end-effector space features")
-    else:
-        features = define_franka_fr3_features()
-        logger.info("Using joint space features")
+    # Create robot configuration to get features dynamically
+    robot_config = create_robot_config(use_ee=use_ee)
+    robot = make_robot_from_config(robot_config)
+    
+    # Get features from robot configuration
+    action_features = hw_to_dataset_features(robot.action_features, ACTION, use_video=False)
+    obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=False)
+    
+    # Strip .pos suffix from feature names
+    for feature_key in action_features:
+        if "names" in action_features[feature_key] and isinstance(action_features[feature_key]["names"], list):
+            action_features[feature_key]["names"] = [
+                name.removesuffix(".pos") for name in action_features[feature_key]["names"]
+            ]
+    
+    for feature_key in obs_features:
+        if "names" in obs_features[feature_key] and isinstance(obs_features[feature_key]["names"], list):
+            obs_features[feature_key]["names"] = [
+                name.removesuffix(".pos") for name in obs_features[feature_key]["names"]
+            ]
+    
+    features = {**action_features, **obs_features}
+    
+    logger.info(f"Using {'end-effector' if use_ee else 'joint'} space features")
+    logger.info(f"Action features: {list(action_features.keys())}")
+    logger.info(f"Observation features: {list(obs_features.keys())}")
     
     # Create LeRobot dataset
     dataset = LeRobotDataset.create(
@@ -262,24 +276,29 @@ def convert_h5_to_lerobot(
             episode_length = len(front_imgs)
             logger.info(f"Episode {episode_idx} has {episode_length} frames")
             
+            # Select task description for this episode (rotate through descriptions sequentially)
+            if language_descriptions is not None:
+                episode_task = language_descriptions[episode_idx % len(language_descriptions)]
+                logger.info(f"Episode {episode_idx} task: '{episode_task}'")
+            else:
+                episode_task = task_name
+            
             # Process each frame in the episode
             for frame_idx in range(episode_length):
-                # Prepare frame data (don't include episode_index, frame_index, timestamp as they're auto-added)
-                frame_data = {
-                    "task": "softtoy_in_drawer",
-                    "observation.state": observation_state[frame_idx].astype(np.float32),
-                    "observation.images.front_img": front_imgs[frame_idx],
-                    "observation.images.wrist_img": wrist_imgs[frame_idx],
-                }
+                # Prepare observation values
+                state_names = robot_config.ee_names if use_ee else robot_config.joint_names
+                # Values dict keys must match the stripped names (without .pos suffix)
+                obs_values = {name: float(observation_state[frame_idx][i]) for i, name in enumerate(state_names)}
+                obs_values.update({"front_img": front_imgs[frame_idx], "wrist_img": wrist_imgs[frame_idx]})
                 
-                # For actions, we use the next state as target (simple approach)
-                # For the last frame, we use the current state
-                if frame_idx < episode_length - 1:
-                    action = observation_state[frame_idx + 1].astype(np.float32)
-                else:
-                    action = observation_state[frame_idx].astype(np.float32)
+                # Prepare action values (next state as target)
+                next_state = observation_state[frame_idx + 1] if frame_idx < episode_length - 1 else observation_state[frame_idx]
+                action_values = {name: float(next_state[i]) for i, name in enumerate(state_names)}
                 
-                frame_data["action"] = action
+                # Build frame using build_dataset_frame
+                obs_frame = build_dataset_frame(features, obs_values, OBS_STR)
+                action_frame = build_dataset_frame(features, action_values, ACTION)
+                frame_data = {**obs_frame, **action_frame, "task": episode_task}
                 
                 # Add frame to episode buffer
                 dataset.add_frame(frame_data)
@@ -345,6 +364,14 @@ def main():
         default=None,
         help="List of joint names for FK computation (default: panda_joint1-7)"
     )
+    parser.add_argument(
+        "--task_name",
+        type=str,
+        default=None,
+        help="Default task name to use if language file (.txt) is not found. "
+             "If not provided, uses the h5 filename (without extension). "
+             "The script automatically looks for a .txt file with the same name as the h5 file."
+    )
     
     args = parser.parse_args()
     
@@ -372,6 +399,7 @@ def main():
         urdf_path=args.urdf_path,
         ee_frame_name=args.ee_frame_name,
         joint_names=args.joint_names,
+        task_name=args.task_name,
     )
 
 

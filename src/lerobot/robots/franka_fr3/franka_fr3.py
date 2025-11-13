@@ -16,16 +16,13 @@
 
 import logging
 from functools import cached_property
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
-
-from lerobot.cameras.utils import make_cameras_from_configs
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
 
 from ..robot import Robot
 from .config_franka_fr3 import FrankaFR3Config
-from .franka_interface import initialize_franka_interface, FrankaInterface
 
 logger = logging.getLogger(__name__)
 
@@ -50,23 +47,28 @@ class FrankaFR3(Robot):
         # Joint names from config
         self.joint_names = config.joint_names
         
-        # Initialize camera systems
-        self.cameras = make_cameras_from_configs(config.cameras)
+        # Camera systems (initialized on connect)
+        self.cameras = None
         
         # ROS2 interface (initialized on connect)
-        self.franka_interface: Optional[FrankaInterface] = None
+        self.franka_interface = None
         
     @property
     def _motors_ft(self) -> dict[str, type]:
         """Feature types for motor positions"""
-        return {f"{joint}.pos": float for joint in self.joint_names}
+        if self.config.use_ee:
+            # End-effector space
+            return {f"{name}.pos": float for name in self.config.ee_names}
+        else:
+            # Joint space
+            return {f"{joint}.pos": float for joint in self.joint_names}
 
     @property
     def _cameras_ft(self) -> dict[str, tuple]:
         """Feature types for cameras"""
         return {
             cam: (self.config.cameras[cam].height, self.config.cameras[cam].width, 3) 
-            for cam in self.cameras
+            for cam in self.config.cameras
         }
 
     @cached_property
@@ -104,8 +106,12 @@ class FrankaFR3(Robot):
         """
         if self.is_connected:
             raise DeviceAlreadyConnectedError(f"{self} already connected")
-
         logger.info("Connecting to Franka FR3")
+        
+        from lerobot.cameras.utils import make_cameras_from_configs
+        from .franka_interface import initialize_franka_interface
+
+        self.cameras = make_cameras_from_configs(self.config.cameras)
         
         try:
             # Initialize ROS2 interface

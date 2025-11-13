@@ -18,8 +18,7 @@ Example (async):
         --server_address 127.0.0.1:8080 \
         --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last \
         --policy_type act \
-        --task "pick up the soft toy and place it in the drawer" \
-        --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}"
+        --task "pick up the soft toy and place it in the drawer"
 
 Example (sync):
     python deploy_robot_client.py \
@@ -27,12 +26,10 @@ Example (sync):
         --checkpoint_path outputs/train/diffusion_franka_fr3_softtoy/checkpoints/last \
         --policy_type diffusion \
         --task "pick up the soft toy and place it in the drawer" \
-        --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}" \
         --fps 10
 """
 
 import argparse
-import ast
 import logging
 from pathlib import Path
 
@@ -96,14 +93,6 @@ def main():
         type=str, 
         default="",
         help="Task description for the robot to execute"
-    )
-    
-    # Camera configuration
-    parser.add_argument(
-        "--cameras", 
-        type=str, 
-        required=True,
-        help="Camera configuration as a Python dict string where keys are camera names and values are RealSenseCameraConfig parameters. Example: \"{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}\""
     )
     
     # Control parameters
@@ -173,29 +162,22 @@ def main():
     if args.actions_per_chunk <= 0:
         raise ValueError(f"actions_per_chunk must be positive, got {args.actions_per_chunk}")
     
-    # Parse camera configuration
-    try:
-        cameras_dict = ast.literal_eval(args.cameras)
-        
-        # Map rotation degrees to Cv2Rotation enum
-        rotation_map = {
-            0: Cv2Rotation.NO_ROTATION,
-            90: Cv2Rotation.ROTATE_90,
-            180: Cv2Rotation.ROTATE_180,
-            270: Cv2Rotation.ROTATE_270,
-        }
-        
-        camera_configs = {}
-        for camera_name, config in cameras_dict.items():
-            # Convert rotation if present
-            if 'rotation' in config:
-                config = {**config, 'rotation': rotation_map[config['rotation']]}
-            
-            camera_configs[camera_name] = RealSenseCameraConfig(**config)
-            
-    except Exception as e:
-        logger.error(f"Failed to parse camera configuration: {e}")
-        return 1
+    # Hardcoded camera configuration for Franka FR3
+    camera_configs = {
+        "front_img": RealSenseCameraConfig(
+            serial_number_or_name="938422074102",
+            width=640,
+            height=480,
+            fps=30,
+            rotation=Cv2Rotation.ROTATE_180,
+        ),
+        "wrist_img": RealSenseCameraConfig(
+            serial_number_or_name="919122070360",
+            width=640,
+            height=480,
+            fps=30,
+        ),
+    }
     
     # Create Franka FR3 robot configuration
     robot_config = FrankaFR3Config(

@@ -1,14 +1,19 @@
+# Dataset Setup
+---------------------------------------------
 python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
-    --h5_path /mount/scratch4/prabin/codig_robot_datasets/softtoy_in_drawer.h5 \
-    --output_dir ./datasets/franka_fr3_softtoy_in_drawer_ee \
-    --repo_id franka_fr3/softtoy_in_drawer_ee \
-    --use_ee \
-    --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
-    --ee_frame_name fr3_hand_tcp
+    --h5_path /home/local/ASUAD/prath4/Downloads/codig_robot_datasets/softtoy_in_drawer.h5 \
+    --output_dir ./datasets/franka_fr3_softtoy_in_drawer \
+    --repo_id franka_fr3/softtoy_in_drawer \
+    # --use_ee \
+    # --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
+    # --ee_frame_name fr3_hand_tcp
+    # --language_file examples/franka_fr3_logos/task_descriptions.txt  # Uncomment to add paraphrased language annotations
 
-lerobot-dataset-viz --repo-id franka_fr3_softtoy_in_drawer_ee --root ./datasets/franka_fr3_softtoy_in_drawer_ee --episode-index 0
+lerobot-dataset-viz --repo-id franka_fr3_softtoy_in_drawer --root ./datasets/franka_fr3_softtoy_in_drawer --episode-index 0
 
-python3 src/lerobot/scripts/lerobot_train.py \
+# Training Setup
+---------------------------------------------
+lerobot-train \
   --dataset.root=/home/local/ASUAD/prath4/Repos/lerobot/datasets/franka_fr3_softtoy_in_drawer \
   --dataset.repo_id=franka_fr3_softtoy_in_drawer \
   --policy.type=act \
@@ -45,6 +50,30 @@ lerobot-train \
   --wandb.enable=false \
   --policy.device=cuda
 
+lerobot-train \
+  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --policy.path=lerobot/smolvla_base \
+  --policy.chunk_size=50 \
+  --policy.n_action_steps=50 \
+  --policy.freeze_vision_encoder=true \
+  --policy.train_expert_only=true \
+  --policy.train_state_proj=true \
+  --policy.push_to_hub=false \
+  --output_dir=outputs/train/smolvla_franka_fr3_softtoy_joints \
+  --job_name=smolvla_franka_fr3_softtoy_joints \
+  --steps=20000 \
+  --batch_size=64 \
+  --log_freq=250 \
+  --save_freq=5000 \
+  --eval_freq=0 \
+  --wandb.enable=false \
+  --policy.device=cuda \
+  --policy.empty_cameras=1 \
+  --rename_map='{"observation.images.front_img": "observation.images.camera1", "observation.images.wrist_img": "observation.images.camera2"}'
+
+# Deployment Setup
+---------------------------------------------
 python3 examples/franka_fr3_logos/deploy_policy_server.py \
   --host 127.0.0.1 \
   --port 8080 \
@@ -57,7 +86,6 @@ python3 examples/franka_fr3_logos/deploy_robot_client.py \
   --policy_type act \
   --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last/pretrained_model \
   --task 'pick up the soft toy and place it in the drawer' \
-  --cameras "{'front_img': {'serial_number_or_name': '938422074102', 'width': 640, 'height': 480, 'fps': 30, 'rotation': 180}, 'wrist_img': {'serial_number_or_name': '919122070360', 'width': 640, 'height': 480, 'fps': 30}}" \
   --actions_per_chunk 16 \
   --chunk_size_threshold 0.5 \
   --aggregate_fn_name "average" \
