@@ -16,20 +16,22 @@ Usage:
 Example (async):
     python deploy_robot_client.py \
         --server_address 127.0.0.1:8080 \
-        --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last \
+        --checkpoint_path outputs/train/act_franka_fr3_softtoy/checkpoints/last/pretrained_model \
         --policy_type act \
         --task "pick up the soft toy and place it in the drawer"
+        # --rename_map '{"observation.images.front_img": "observation.images.camera1", "observation.images.wrist_img": "observation.images.camera2"}'
 
 Example (sync):
     python deploy_robot_client.py \
         --use_sync_inference \
-        --checkpoint_path outputs/train/diffusion_franka_fr3_softtoy/checkpoints/last \
+        --checkpoint_path outputs/train/diffusion_franka_fr3_softtoy/checkpoints/last/pretrained_model \
         --policy_type diffusion \
         --task "pick up the soft toy and place it in the drawer" \
         --fps 10
 """
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -149,7 +151,23 @@ def main():
         help="Test configuration without connecting to robot"
     )
     
+    # Observation remapping
+    parser.add_argument(
+        "--rename_map",
+        type=str,
+        default="{}",
+        help='JSON string to remap observation keys (e.g., \'{"observation.images.front_img": "observation.images.camera1"}\')'
+    )
+    
     args = parser.parse_args()
+    
+    # Parse rename_map from JSON string
+    try:
+        rename_map = json.loads(args.rename_map)
+        if not isinstance(rename_map, dict):
+            raise ValueError("rename_map must be a dictionary")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON for rename_map: {e}")
     
     # Validate inputs
     checkpoint_path = Path(args.checkpoint_path)
@@ -163,7 +181,7 @@ def main():
         raise ValueError(f"actions_per_chunk must be positive, got {args.actions_per_chunk}")
     
     # Hardcoded camera configuration for Franka FR3
-    camera_configs = {
+    base_camera_configs = {
         "front_img": RealSenseCameraConfig(
             serial_number_or_name="938422074102",
             width=640,
@@ -178,6 +196,23 @@ def main():
             fps=30,
         ),
     }
+    
+    # Apply rename_map to camera keys if provided
+    # This allows the robot to output observations with keys matching the policy's expectations
+    camera_configs = {}
+    for hw_camera_name, camera_config in base_camera_configs.items():
+        # Build the full observation key as it would appear in observations
+        full_key = f"observation.images.{hw_camera_name}"
+        
+        # Check if this key needs to be renamed
+        if full_key in rename_map:
+            # Extract the new camera name from the renamed key
+            # e.g., "observation.images.camera1" -> "camera1"
+            new_camera_name = rename_map[full_key].split(".")[-1]
+            camera_configs[new_camera_name] = camera_config
+            logger.info(f"Renamed camera '{hw_camera_name}' -> '{new_camera_name}' for policy compatibility")
+        else:
+            camera_configs[hw_camera_name] = camera_config
     
     # Create Franka FR3 robot configuration
     robot_config = FrankaFR3Config(
