@@ -31,7 +31,7 @@ lerobot-train \
   --policy.push_to_hub=false \
   --output_dir=outputs/train/act_franka_fr3_softtoy \
   --job_name=act_franka_fr3_softtoy \
-  --steps=8000 \
+  --steps=50000 \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=5000 \
@@ -59,6 +59,7 @@ lerobot-train \
   --wandb.enable=false \
   --policy.device=cuda
 
+# use when finetuning on the same embodiment
 lerobot-train \
   --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
   --dataset.repo_id=franka_fr3_softtoy_in_drawer \
@@ -69,8 +70,8 @@ lerobot-train \
   --policy.train_expert_only=true \
   --policy.train_state_proj=true \
   --policy.push_to_hub=false \
-  --output_dir=outputs/train/smolvla_franka_fr3_softtoy_joints \
-  --job_name=smolvla_franka_fr3_softtoy_joints \
+  --output_dir=outputs/train/smolvla_franka_fr3_softtoy \
+  --job_name=smolvla_franka_fr3_softtoy \
   --steps=20000 \
   --batch_size=64 \
   --log_freq=250 \
@@ -78,8 +79,31 @@ lerobot-train \
   --eval_freq=0 \
   --wandb.enable=false \
   --policy.device=cuda \
-  --policy.empty_cameras=1 \
+  --policy.empty_cameras=0 \
   --rename_map='{"observation.images.front_img": "observation.images.camera1", "observation.images.wrist_img": "observation.images.camera2"}'
+
+# use when finetuning on the different embodiments
+lerobot-train \
+  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --policy.type=smolvla \
+  --policy.pretrained_path=lerobot/smolvla_base \
+  --policy.chunk_size=50 \
+  --policy.n_action_steps=50 \
+  --policy.freeze_vision_encoder=true \
+  --policy.train_expert_only=true \
+  --policy.train_state_proj=true \
+  --policy.push_to_hub=false \
+  --output_dir=outputs/train/smolvla_franka_fr3_softtoy \
+  --job_name=smolvla_franka_fr3_softtoy \
+  --steps=20000 \
+  --batch_size=64 \
+  --log_freq=250 \
+  --save_freq=5000 \
+  --eval_freq=0 \
+  --wandb.enable=false \
+  --policy.empty_cameras=0 \
+  --policy.device=cuda
 
 # Deployment Setup
 ---------------------------------------------
