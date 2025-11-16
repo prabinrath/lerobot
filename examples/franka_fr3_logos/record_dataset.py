@@ -59,7 +59,7 @@ class RecordingController(Node):
             10
         )
         
-        # Recording state: 'waiting', 'recording', or 'save'
+        # Recording state: 'waiting', 'recording', 'save', or 'reject'
         self.state = 'waiting'
         self.lock = Lock()
         
@@ -70,10 +70,12 @@ class RecordingController(Node):
         # Button indices
         self.BUTTON_A = 14  # Start recording
         self.BUTTON_B = 15  # Stop and save
+        self.BUTTON_R = 8   # Reject episode
         
         self.get_logger().info("Recording controller initialized")
         self.get_logger().info("Press Button A to start recording")
         self.get_logger().info("Press Button B to stop and save episode")
+        self.get_logger().info("Press Button R to reject episode (discard without saving)")
     
     def joy_callback(self, msg):
         """Handle joystick messages from SpaceNav."""
@@ -90,6 +92,11 @@ class RecordingController(Node):
             elif msg.buttons[self.BUTTON_B] == 1 and self.state == 'recording':
                 self.state = 'save'
                 self.get_logger().info("■ STOPPING RECORDING - Will save episode")
+            
+            # Button R: Reject episode (only if recording)
+            elif msg.buttons[self.BUTTON_R] == 1 and self.state == 'recording':
+                self.state = 'reject'
+                self.get_logger().info("✗ REJECTING EPISODE - Will discard without saving")
     
     def joint_trajectory_callback(self, msg):
         """Handle joint trajectory command messages."""
@@ -112,6 +119,11 @@ class RecordingController(Node):
         """Check if recording should stop and save."""
         with self.lock:
             return self.state == 'save'
+    
+    def should_reject(self):
+        """Check if recording should stop and reject (discard)."""
+        with self.lock:
+            return self.state == 'reject'
     
     def reset_to_waiting(self):
         """Reset state to waiting after episode is saved."""
@@ -151,6 +163,7 @@ def record_episode(robot, dataset, fps, task, controller, image_size=None):
     print(f"\n{'='*70}")
     print(f"🔴 RECORDING EPISODE {dataset.num_episodes}")
     print(f"Press Button B('4') to stop and save")
+    print(f"Press Button R(square button on right) to reject and discard")
     print(f"{'='*70}\n")
     
     dt = 1.0 / fps
@@ -205,6 +218,12 @@ def record_episode(robot, dataset, fps, task, controller, image_size=None):
                 time.sleep(dt - elapsed)
             else:
                 logging.warning(f"Loop took {elapsed:.3f}s, longer than target {dt:.3f}s")
+        
+        # Check if episode was rejected
+        if controller.should_reject():
+            print(f"\n✗ Episode rejected! Recorded {frame_count} frames (discarded)")
+            controller.reset_to_waiting()
+            return False  # Return False to indicate rejection
         
         # Handle the last frame: duplicate the last observation as action
         if prev_obs_frame is not None:
@@ -403,8 +422,10 @@ def main():
                             print(f"Press Button A when ready to record episode {episodes_recorded + 1}")
                             print("Or press Ctrl+C to finish recording.\n")
                     else:
-                        logger.info("Episode discarded")
+                        logger.info("Episode rejected - clearing buffer")
                         dataset.clear_episode_buffer()
+                        print(f"\nPress Button A to start a fresh recording of episode {episodes_recorded + 1}")
+                        print("Or press Ctrl+C to finish recording.\n")
                         
                 except KeyboardInterrupt:
                     print("\n\n⚠ Stopping recording...")
