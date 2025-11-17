@@ -292,7 +292,7 @@ def convert_h5_to_lerobot(
                     commands = np.concatenate([commands_7dof, gripper_values], axis=1)  # Shape: (T, 8)
                 else:
                     logger.warning(f"No 'command' data found in {demo_key}, using observation state as command")
-                    commands = observation_state.copy()  # Use full observation state (T, 8)
+                    commands = observation_state.copy().astype(np.float32)  # Use full observation state (T, 8)
                 
                 # Convert to EE space if requested
                 if use_ee:
