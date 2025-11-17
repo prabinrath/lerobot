@@ -41,19 +41,15 @@ from pathlib import Path
 import h5py
 import numpy as np
 
-from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
+from lerobot.datasets.video_utils import VideoEncodingManager
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
 from lerobot.robots.utils import make_robot_from_config
 from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.rotation import Rotation
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 
 def create_robot_config(use_ee: bool = False):
@@ -86,17 +82,17 @@ def extract_joint_positions_from_h5(joint_states):
     Extract joint positions and gripper state from the H5 joint_states data.
     
     Args:
-        joint_states: Array of shape (timesteps, 3, 9) containing [position, velocity, acceleration]
+        joint_states: Array of shape (timesteps, 3, N) where N is 8 or 9
+                     containing [position, velocity, acceleration]
         
     Returns:
         Array of shape (timesteps, 8) containing 7 joint positions + gripper value
     """
-    # Extract position data (first row) and first 7 joints + gripper (joint 7)
-    joint_positions = joint_states[:, 0, :7]  # Shape: (timesteps, 7)
-    gripper_values = joint_states[:, 0, 7:8]  # Shape: (timesteps, 1) - 8th joint as gripper
+    # Extract position data (first row) - use first 8 joints (7 arm + 1 gripper)
+    # This handles both (T, 3, 8) and (T, 3, 9) formats - the 9th joint is unused if present
+    joint_positions = joint_states[:, 0, :8]  # Shape: (timesteps, 8)
     
-    # Combine joint positions and gripper values
-    return np.column_stack([joint_positions, gripper_values])  # Shape: (timesteps, 8)
+    return joint_positions  # Shape: (timesteps, 8)
 
 
 def convert_joints_to_ee(joint_positions: np.ndarray, kinematics: RobotKinematics) -> np.ndarray:
@@ -145,6 +141,7 @@ def convert_h5_to_lerobot(
     ee_frame_name: str = "fr3_hand_tcp",
     joint_names: list[str] | None = None,
     task_name: str | None = None,
+    logger: logging.Logger | None = None,
 ):
     """
     Convert H5 dataset to LeRobot format.
@@ -159,7 +156,11 @@ def convert_h5_to_lerobot(
         ee_frame_name: Name of the end-effector frame in URDF (default: "fr3_hand_tcp")
         joint_names: List of joint names for FK (default: None, uses all joints)
         task_name: Default task name if language file is not found (default: None, uses h5 filename)
+        logger: Logger instance for logging messages (default: None, creates a new logger)
     """
+    if logger is None:
+        logger = logging.getLogger(__name__)
+    
     logger.info(f"Converting H5 dataset from {h5_path} to LeRobot format")
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Repository ID: {repo_id}")
@@ -215,8 +216,8 @@ def convert_h5_to_lerobot(
     robot = make_robot_from_config(robot_config)
     
     # Get features from robot configuration
-    action_features = hw_to_dataset_features(robot.action_features, ACTION, use_video=False)
-    obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=False)
+    action_features = hw_to_dataset_features(robot.action_features, ACTION, use_video=True)
+    obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=True)
     
     # Strip .pos suffix from feature names
     for feature_key in action_features:
@@ -231,81 +232,110 @@ def convert_h5_to_lerobot(
                 name.removesuffix(".pos") for name in obs_features[feature_key]["names"]
             ]
     
-    features = {**action_features, **obs_features}
+    # Add command feature to observations (commanded joint positions)
+    # The command feature has all joint names (including gripper for 8 total)
+    command_feature = {
+        "observation.command": {
+            "dtype": "float32",
+            "shape": (len(robot.joint_names),),  # All joints including gripper
+            "names": robot.joint_names,
+        }
+    }
+    
+    features = {**action_features, **obs_features, **command_feature}
     
     logger.info(f"Using {'end-effector' if use_ee else 'joint'} space features")
     logger.info(f"Action features: {list(action_features.keys())}")
     logger.info(f"Observation features: {list(obs_features.keys())}")
+    logger.info(f"Command feature: observation.command with shape {command_feature['observation.command']['shape']}")
     
-    # Create LeRobot dataset
+    # Create LeRobot dataset with video support
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
         fps=fps,
         root=output_dir,
         robot_type="franka_fr3",
         features=features,
-        use_videos=False,  # We'll use individual images
+        use_videos=True, 
+        image_writer_processes=0,
+        image_writer_threads=4,  # Use 4 threads for encoding
     )
     
-    # Load H5 data
-    with h5py.File(h5_path, 'r') as f:
-        data_group = f['data']
-        demo_keys = [key for key in data_group.keys() if key.startswith('demo_')]
-        demo_keys.sort(key=lambda x: int(x.split('_')[1]))  # Sort numerically
-        
-        logger.info(f"Found {len(demo_keys)} demonstrations")
-        
-        for episode_idx, demo_key in enumerate(demo_keys):
-            logger.info(f"Processing episode {episode_idx}: {demo_key}")
+    # Load H5 data and convert with video encoding
+    with VideoEncodingManager(dataset):
+        with h5py.File(h5_path, 'r') as f:
+            data_group = f['data']
+            demo_keys = [key for key in data_group.keys() if key.startswith('demo_')]
+            demo_keys.sort(key=lambda x: int(x.split('_')[1]))  # Sort numerically
             
-            demo_data = data_group[demo_key]
+            logger.info(f"Found {len(demo_keys)} demonstrations")
             
-            # Extract data
-            front_imgs = np.array(demo_data['front_img'])
-            wrist_imgs = np.array(demo_data['wrist_img'])
-            joint_states = np.array(demo_data['joint_states'])
-            
-            # Extract joint positions and gripper state (now combined)
-            observation_state = extract_joint_positions_from_h5(joint_states)
-            
-            # Convert to EE space if requested
-            if use_ee:
-                logger.info(f"Converting joint positions to EE poses for episode {episode_idx}")
-                observation_state = convert_joints_to_ee(observation_state, kinematics)
-            
-            episode_length = len(front_imgs)
-            logger.info(f"Episode {episode_idx} has {episode_length} frames")
-            
-            # Select task description for this episode (rotate through descriptions sequentially)
-            if language_descriptions is not None:
-                episode_task = language_descriptions[episode_idx % len(language_descriptions)]
-                logger.info(f"Episode {episode_idx} task: '{episode_task}'")
-            else:
-                episode_task = task_name
-            
-            # Process each frame in the episode
-            for frame_idx in range(episode_length):
-                # Prepare observation values
-                state_names = robot_config.ee_names if use_ee else robot_config.joint_names
-                # Values dict keys must match the stripped names (without .pos suffix)
-                obs_values = {name: float(observation_state[frame_idx][i]) for i, name in enumerate(state_names)}
-                obs_values.update({"front_img": front_imgs[frame_idx], "wrist_img": wrist_imgs[frame_idx]})
+            for episode_idx, demo_key in enumerate(demo_keys):
+                logger.info(f"Processing episode {episode_idx}: {demo_key}")
                 
-                # Prepare action values (next state as target)
-                next_state = observation_state[frame_idx + 1] if frame_idx < episode_length - 1 else observation_state[frame_idx]
-                action_values = {name: float(next_state[i]) for i, name in enumerate(state_names)}
+                demo_data = data_group[demo_key]
                 
-                # Build frame using build_dataset_frame
-                obs_frame = build_dataset_frame(features, obs_values, OBS_STR)
-                action_frame = build_dataset_frame(features, action_values, ACTION)
-                frame_data = {**obs_frame, **action_frame, "task": episode_task}
+                # Extract data
+                front_imgs = np.array(demo_data['front_img'])
+                wrist_imgs = np.array(demo_data['wrist_img'])
+                joint_states = np.array(demo_data['joint_states'])
                 
-                # Add frame to episode buffer
-                dataset.add_frame(frame_data)
-            
-            # Save the episode
-            dataset.save_episode()
-            logger.info(f"Saved episode {episode_idx}")
+                # Extract joint positions and gripper state (now combined)
+                observation_state = extract_joint_positions_from_h5(joint_states)
+                
+                # Load command data if available, otherwise create empty arrays
+                # Command from H5 has 7 values (arm joints), we need to add gripper from observations
+                if 'command' in demo_data:
+                    commands_7dof = np.array(demo_data['command'])  # Shape: (T, 7)
+                    # Append gripper values from observation_state to make it (T, 8)
+                    gripper_values = observation_state[:, -1:]  # Shape: (T, 1) - last column is gripper
+                    commands = np.concatenate([commands_7dof, gripper_values], axis=1)  # Shape: (T, 8)
+                else:
+                    logger.warning(f"No 'command' data found in {demo_key}, using observation state as command")
+                    commands = observation_state.copy()  # Use full observation state (T, 8)
+                
+                # Convert to EE space if requested
+                if use_ee:
+                    logger.info(f"Converting joint positions to EE poses for episode {episode_idx}")
+                    observation_state = convert_joints_to_ee(observation_state, kinematics)
+                
+                episode_length = len(front_imgs)
+                logger.info(f"Episode {episode_idx} has {episode_length} frames")
+                
+                # Select task description for this episode (rotate through descriptions sequentially)
+                if language_descriptions is not None:
+                    episode_task = language_descriptions[episode_idx % len(language_descriptions)]
+                    logger.info(f"Episode {episode_idx} task: '{episode_task}'")
+                else:
+                    episode_task = task_name
+                
+                # Process each frame in the episode
+                for frame_idx in range(episode_length):
+                    # Prepare observation values
+                    state_names = robot_config.ee_names if use_ee else robot_config.joint_names
+                    # Values dict keys must match the stripped names (without .pos suffix)
+                    obs_values = {name: float(observation_state[frame_idx][i]) for i, name in enumerate(state_names)}
+                    obs_values.update({"front_img": front_imgs[frame_idx], "wrist_img": wrist_imgs[frame_idx]})
+                    
+                    # Prepare action values (next state as target)
+                    next_state = observation_state[frame_idx + 1] if frame_idx < episode_length - 1 else observation_state[frame_idx]
+                    action_values = {name: float(next_state[i]) for i, name in enumerate(state_names)}
+                    
+                    # Build frame using build_dataset_frame
+                    obs_frame = build_dataset_frame(features, obs_values, OBS_STR)
+                    action_frame = build_dataset_frame(features, action_values, ACTION)
+                    
+                    # Add command to observation frame directly (after build_dataset_frame)
+                    obs_frame["observation.command"] = commands[frame_idx]
+                    
+                    frame_data = {**obs_frame, **action_frame, "task": episode_task}
+                    
+                    # Add frame to episode buffer
+                    dataset.add_frame(frame_data)
+                
+                # Save the episode
+                dataset.save_episode()
+                logger.info(f"Saved episode {episode_idx}")
     
     logger.info("Dataset conversion completed!")
     logger.info(f"Total episodes: {dataset.meta.total_episodes}")
@@ -315,6 +345,13 @@ def convert_h5_to_lerobot(
 
 
 def main():
+    logger = logging.getLogger("convert_h5_to_lerobot_dataset")
+    logger.setLevel(logging.INFO)
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(console_handler)
+    logger.propagate = False
+
     parser = argparse.ArgumentParser(description="Convert H5 dataset to LeRobot format")
     parser.add_argument(
         "--h5_path",
@@ -400,6 +437,7 @@ def main():
         ee_frame_name=args.ee_frame_name,
         joint_names=args.joint_names,
         task_name=args.task_name,
+        logger=logger,
     )
 
 

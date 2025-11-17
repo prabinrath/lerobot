@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-Record observations from Franka FR3 robot while teleoperation happens externally.
+Record observations from Franka FR3 robot to H5 format while teleoperation happens externally.
 
-This script only records robot observations (joint states + camera images) without 
+This script only records robot observations (joint states, command, camera images) without 
 controlling the robot. You teleoperate the robot from a different package/interface,
 and this script passively records what the robot is doing.
+
+The H5 format follows this structure:
+- data/
+  - demo_0/
+    - front_img: (T, H, W, 3) uint8
+    - wrist_img: (T, H, W, 3) uint8
+    - joint_states: (T, 3, 8) float32 - [position, velocity, acceleration] x 8 joints
+    - command: (T, 7) float32 - commanded joint positions (7 arm joints, no gripper)
 
 Usage:
     python record_dataset.py \
         --robot_id franka_fr3 \
-        --dataset_repo_id franka_fr3/my_dataset \
-        --dataset_root datasets/my_dataset \
-        --task "Pick and place task" \
+        --output_path datasets/my_dataset.h5 \
         --num_episodes 10 \
         --fps 30 \
         --image_size 96 96
@@ -20,9 +26,11 @@ Usage:
 import argparse
 import logging
 import time
+from pathlib import Path
 from threading import Lock, Thread
 
 import cv2
+import h5py
 import numpy as np
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
@@ -31,12 +39,8 @@ from trajectory_msgs.msg import JointTrajectory
 
 from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
-from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
-from lerobot.datasets.video_utils import VideoEncodingManager
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
 from lerobot.robots.utils import make_robot_from_config
-from lerobot.utils.constants import OBS_STR, ACTION
 
 
 class RecordingController(Node):
@@ -136,23 +140,29 @@ class RecordingController(Node):
             return self.commanded_positions.copy() if self.commanded_positions is not None else None
 
 
-def record_episode(robot, dataset, fps, task, controller, image_size=None):
-    """Record a single episode of observations.
+def record_episode(robot, episode_idx, fps, controller, image_size=None):
+    """Record a single episode of observations to H5 format.
     
-    The action at time t is the observation at time t+1 (next state).
-    This is the standard format for imitation learning datasets.
     Recording is controlled by SpaceNav buttons A (start) and B (stop/save).
     
     Args:
         robot: Robot instance
-        dataset: LeRobotDataset instance
+        episode_idx: Current episode index
         fps: Recording frequency
-        task: Task description
         controller: RecordingController instance
         image_size: Optional tuple (height, width) to resize images
+        
+    Returns:
+        Dictionary with episode data or None if rejected:
+        {
+            'front_img': (T, H, W, 3) numpy array,
+            'wrist_img': (T, H, W, 3) numpy array,
+            'joint_states': (T, 3, 8) numpy array - [position, velocity, acceleration] x 8 joints,
+            'command': (T, 7) numpy array - commanded joint positions (arm joints only)
+        }
     """
     print(f"\n{'='*70}")
-    print(f"Waiting for Button A('3') to start recording episode {dataset.num_episodes + 1}")
+    print(f"Waiting for Button A('3') to start recording episode {episode_idx + 1}")
     print(f"Recording at {fps} fps")
     print(f"{'='*70}\n")
     
@@ -161,17 +171,19 @@ def record_episode(robot, dataset, fps, task, controller, image_size=None):
         time.sleep(0.01)
     
     print(f"\n{'='*70}")
-    print(f"🔴 RECORDING EPISODE {dataset.num_episodes}")
+    print(f"🔴 RECORDING EPISODE {episode_idx + 1}")
     print(f"Press Button B('4') to stop and save")
     print(f"Press Button R(square button on right) to reject and discard")
     print(f"{'='*70}\n")
     
     dt = 1.0 / fps
     start_time = time.perf_counter()
-    frame_count = 0
     
-    # Keep track of previous observation frame
-    prev_obs_frame = None
+    # Buffers to store episode data
+    front_imgs = []
+    wrist_imgs = []
+    joint_states = []  # Will store (3, 8) arrays: [position, velocity, acceleration] x 8 joints
+    commands = []  # Will store commanded joint positions (7 arm joints)
     
     try:
         while controller.is_recording():
@@ -186,31 +198,43 @@ def record_episode(robot, dataset, fps, task, controller, image_size=None):
             # Strip .pos suffix from observation keys
             obs = {key.removesuffix(".pos"): value for key, value in obs.items()}
             
-            # Resize images if image_size is specified
+            # Extract and resize camera images
+            front_img = obs.get('front_img')
+            wrist_img = obs.get('wrist_img')
+            
             if image_size is not None:
-                for key in obs:
-                    if key.endswith("_img") or key.endswith("_image"):
-                        obs[key] = cv2.resize(obs[key], (image_size[1], image_size[0]), interpolation=cv2.INTER_LINEAR)
+                if front_img is not None:
+                    front_img = cv2.resize(front_img, (image_size[1], image_size[0]), interpolation=cv2.INTER_LINEAR)
+                if wrist_img is not None:
+                    wrist_img = cv2.resize(wrist_img, (image_size[1], image_size[0]), interpolation=cv2.INTER_LINEAR)
             
-            # Build observation frame
-            obs_frame = build_dataset_frame(dataset.features, obs, prefix=OBS_STR)
+            # Extract joint state information
+            # Robot returns joint positions in obs with joint names
+            joint_names = robot.joint_names  # Should be 8 joints: 7 arm joints + gripper
             
-            # Add commanded positions to observation frame if available
+            # Create joint_states array: shape (3, 8) for [position, velocity, acceleration] x 8 joints
+            joint_state = np.zeros((3, 8), dtype=np.float32)
+            
+            # Fill in positions (first row)
+            for i, joint_name in enumerate(joint_names):
+                if joint_name in obs:
+                    joint_state[0, i] = obs[joint_name]
+            
+            # Velocity and acceleration would go in rows 1 and 2 if available
+            # For now, they remain zero as robot.get_observation() typically only provides positions
+            # Store commanded positions (7 arm joints, no gripper)
             if commanded_positions is not None:
-                obs_frame["observation.command"] = np.array(commanded_positions, dtype=np.float32)
+                # commanded_positions should have 7 values for the arm joints
+                command = np.array(commanded_positions[:7], dtype=np.float32)
+            else:
+                # If no command available, use zeros
+                command = np.zeros(7, dtype=np.float32)
             
-            # For action, use the next observation (current obs becomes action for previous frame)
-            if prev_obs_frame is not None:
-                # The action at time t is the observation at time t+1
-                action_frame = build_dataset_frame(dataset.features, obs, prefix=ACTION)
-                
-                # Combine previous observation with current action (next state)
-                frame = {**prev_obs_frame, **action_frame, "task": task}
-                dataset.add_frame(frame)
-                frame_count += 1
-            
-            # Store current observation frame for next iteration
-            prev_obs_frame = obs_frame
+            # Store data
+            front_imgs.append(front_img)
+            wrist_imgs.append(wrist_img)
+            joint_states.append(joint_state)
+            commands.append(command)
             
             # Maintain control frequency
             elapsed = time.perf_counter() - loop_start
@@ -221,25 +245,46 @@ def record_episode(robot, dataset, fps, task, controller, image_size=None):
         
         # Check if episode was rejected
         if controller.should_reject():
-            print(f"\n✗ Episode rejected! Recorded {frame_count} frames (discarded)")
+            print(f"\n✗ Episode rejected! Recorded {len(front_imgs)} frames (discarded)")
             controller.reset_to_waiting()
-            return False  # Return False to indicate rejection
+            return None  # Return None to indicate rejection
         
-        # Handle the last frame: duplicate the last observation as action
-        if prev_obs_frame is not None:
-            # Use the last observation as both obs and action for the final frame
-            action_frame = build_dataset_frame(dataset.features, obs, prefix=ACTION)
-            frame = {**prev_obs_frame, **action_frame, "task": task}
-            dataset.add_frame(frame)
-            frame_count += 1
-        
-        print(f"\n✓ Recorded {frame_count} frames in {time.perf_counter() - start_time:.2f}s")
+        print(f"\n✓ Recorded {len(front_imgs)} frames in {time.perf_counter() - start_time:.2f}s")
         controller.reset_to_waiting()
-        return True
+        
+        # Convert lists to numpy arrays
+        return {
+            'front_img': np.array(front_imgs, dtype=np.uint8),
+            'wrist_img': np.array(wrist_imgs, dtype=np.uint8),
+            'joint_states': np.array(joint_states, dtype=np.float32),
+            'command': np.array(commands, dtype=np.float32)
+        }
         
     except KeyboardInterrupt:
-        print(f"\n\n⚠ Episode interrupted by Ctrl+C! Recorded {frame_count} frames.")
-        return False
+        print(f"\n\n⚠ Episode interrupted by Ctrl+C! Recorded {len(front_imgs)} frames.")
+        return None
+
+
+def save_episode_to_h5(h5_file, episode_data, episode_idx):
+    """
+    Save episode data to H5 file.
+    
+    Args:
+        h5_file: Open h5py.File object
+        episode_data: Dictionary with 'front_img', 'wrist_img', 'joint_states', 'command'
+        episode_idx: Episode index
+    """
+    demo_name = f"demo_{episode_idx}"
+    demo_group = h5_file['data'].create_group(demo_name)
+    
+    # Save data
+    demo_group.create_dataset('front_img', data=episode_data['front_img'], compression='gzip')
+    demo_group.create_dataset('wrist_img', data=episode_data['wrist_img'], compression='gzip')
+    demo_group.create_dataset('joint_states', data=episode_data['joint_states'], compression='gzip')
+    demo_group.create_dataset('command', data=episode_data['command'], compression='gzip')
+    
+    # Flush to ensure data is written
+    h5_file.flush()
 
 
 def main():
@@ -252,7 +297,7 @@ def main():
     logger.propagate = False
     
     parser = argparse.ArgumentParser(
-        description="Record observations from Franka FR3 and create LeRobot dataset",
+        description="Record observations from Franka FR3 and save to H5 format",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -260,13 +305,9 @@ def main():
     parser.add_argument("--robot_id", type=str, default="franka_fr3", 
                        help="Robot identifier")
     
-    # Dataset configuration  
-    parser.add_argument("--dataset_repo_id", type=str, required=True,
-                       help="Dataset repository ID (e.g., username/dataset_name)")
-    parser.add_argument("--dataset_root", type=str, required=True,
-                       help="Local directory to save dataset")
-    parser.add_argument("--task", type=str, required=True,
-                       help="Task description")
+    # Output configuration  
+    parser.add_argument("--output_path", type=str, required=True,
+                       help="Path to save H5 dataset file (e.g., datasets/my_dataset.h5)")
     
     # Recording parameters
     parser.add_argument("--num_episodes", type=int, default=10,
@@ -277,12 +318,14 @@ def main():
                        help="Image size (height width) to resize captured images (default: 96 96)")
     
     # Optional parameters
-    parser.add_argument("--push_to_hub", action="store_true",
-                       help="Upload dataset to Hugging Face Hub after recording")
     parser.add_argument("--resume", action="store_true",
-                       help="Resume recording on existing dataset")
+                       help="Resume recording on existing H5 file")
     
     args = parser.parse_args()
+    
+    # Create output directory if it doesn't exist
+    output_path = Path(args.output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Camera configuration for Franka FR3
     camera_configs = {
@@ -308,11 +351,9 @@ def main():
     )
     
     logger.info("="*70)
-    logger.info("Franka FR3 Observation-Only Recording with SpaceNav Control")
+    logger.info("Franka FR3 Data Recording")
     logger.info("="*70)
-    logger.info(f"Dataset: {args.dataset_repo_id}")
-    logger.info(f"Local path: {args.dataset_root}")
-    logger.info(f"Task: {args.task}")
+    logger.info(f"Output: {args.output_path}")
     logger.info(f"Episodes: {args.num_episodes}")
     logger.info(f"FPS: {args.fps}")
     logger.info(f"Image size: {args.image_size[0]}x{args.image_size[1]}")
@@ -335,114 +376,73 @@ def main():
     spin_thread.start()
     logger.info("ROS2 node spinning in separate thread")
     
-    # Get features from robot configuration
-    action_features = hw_to_dataset_features(robot.action_features, ACTION, use_video=True)
-    obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR, use_video=True)
-    
-    # Strip .pos suffix from feature names
-    for feature_key in action_features:
-        if "names" in action_features[feature_key] and isinstance(action_features[feature_key]["names"], list):
-            action_features[feature_key]["names"] = [
-                name.removesuffix(".pos") for name in action_features[feature_key]["names"]
-            ]
-    
-    for feature_key in obs_features:
-        if "names" in obs_features[feature_key] and isinstance(obs_features[feature_key]["names"], list):
-            obs_features[feature_key]["names"] = [
-                name.removesuffix(".pos") for name in obs_features[feature_key]["names"]
-            ]
-    
-    # Override image shapes with custom size
-    for feature_key in obs_features:
-        if obs_features[feature_key].get("dtype") == "video":
-            # Update shape to custom image size (channels, height, width)
-            obs_features[feature_key]["shape"] = (3, args.image_size[0], args.image_size[1])
-            logger.info(f"Overriding {feature_key} shape to {obs_features[feature_key]['shape']}")
-
-    # Add command feature to observations (commanded joint positions from controller)
-    # The command feature only has 7 arm joints (no gripper)
-    command_feature = {
-        "observation.command": {
-            "dtype": "float32",
-            "shape": (len(robot.joint_names) - 1,),
-            "names": robot.joint_names[:-1],
-        }
-    }
-    
-    features = {**action_features, **obs_features, **command_feature}
-    
     try:
-        # Create or load dataset
+        # Determine starting episode index
+        start_episode = 0
         if args.resume:
-            logger.info(f"Resuming dataset from {args.dataset_root}")
-            dataset = LeRobotDataset(
-                args.dataset_repo_id,
-                root=args.dataset_root,
-            )
-            if hasattr(robot, 'cameras') and len(robot.cameras) > 0:
-                dataset.start_image_writer(
-                    num_processes=0,
-                    num_threads=4 * len(robot.cameras),
-                )
-        else:
-            logger.info("Creating new dataset...")
-            dataset = LeRobotDataset.create(
-                args.dataset_repo_id,
-                args.fps,
-                root=args.dataset_root,
-                robot_type=robot.name,
-                features=features,
-                use_videos=True,
-                image_writer_processes=0,
-                image_writer_threads=4 * len(robot.cameras),
-            )
+            if not output_path.exists():
+                logger.info(f"Dataset file not found: {output_path}")
+                return 1
+            logger.info(f"Resuming from existing file: {output_path}")
+            with h5py.File(output_path, 'r') as f:
+                if 'data' in f:
+                    existing_demos = [k for k in f['data'].keys() if k.startswith('demo_')]
+                    if existing_demos:
+                        # Extract episode numbers and find the max
+                        demo_nums = [int(k.split('_')[1]) for k in existing_demos]
+                        start_episode = max(demo_nums) + 1
+                        logger.info(f"Found {len(existing_demos)} existing episode(s) in file. Will record starting from episode {start_episode + 1}")
         
-        with VideoEncodingManager(dataset):
-            episodes_recorded = 0
+        # Create or open H5 file
+        if not args.resume:
+            # Safety check: prevent accidental overwriting
+            if output_path.exists():
+                logger.error(f"Dataset file already exists: {output_path}")
+                logger.error("Use --resume flag to continue recording, or delete/rename the existing file.")
+                return 1
             
-            while episodes_recorded < args.num_episodes:
-                try:
-                    # Record episode (controlled by SpaceNav buttons)
-                    success = record_episode(
-                        robot=robot,
-                        dataset=dataset,
-                        fps=args.fps,
-                        task=args.task,
-                        controller=controller,
-                        image_size=args.image_size
-                    )
+            logger.info(f"Creating new H5 file: {output_path}")
+            with h5py.File(output_path, 'w') as f:
+                f.create_group('data')
+        
+        current_episode = start_episode
+        
+        while (current_episode - start_episode) < args.num_episodes:
+            try:
+                # Record episode (controlled by SpaceNav buttons)
+                episode_data = record_episode(
+                    robot=robot,
+                    episode_idx=current_episode,
+                    fps=args.fps,
+                    controller=controller,
+                    image_size=args.image_size
+                )
+                
+                if episode_data is not None:
+                    # Close and reopen file in append mode for each save
+                    with h5py.File(output_path, 'a') as h5_file:
+                        save_episode_to_h5(h5_file, episode_data, current_episode)
                     
-                    if success:
-                        dataset.save_episode()
-                        episodes_recorded += 1
-                        logger.info(f"✓ Episode saved! ({episodes_recorded}/{args.num_episodes})")
-                        
-                        if episodes_recorded < args.num_episodes:
-                            print(f"\nReset the environment for next episode.")
-                            print(f"Press Button A when ready to record episode {episodes_recorded + 1}")
-                            print("Or press Ctrl+C to finish recording.\n")
-                    else:
-                        logger.info("Episode rejected - clearing buffer")
-                        dataset.clear_episode_buffer()
-                        print(f"\nPress Button A to start a fresh recording of episode {episodes_recorded + 1}")
+                    logger.info(f"✓ Episode {current_episode + 1} saved! ({current_episode - start_episode + 1}/{args.num_episodes})")
+                    current_episode += 1
+                    
+                    if (current_episode - start_episode) < args.num_episodes:
+                        print(f"\nReset the environment for next episode.")
+                        print(f"Press Button A when ready to record episode {current_episode + 1}")
                         print("Or press Ctrl+C to finish recording.\n")
-                        
-                except KeyboardInterrupt:
-                    print("\n\n⚠ Stopping recording...")
-                    break
+                else:
+                    logger.info("Episode rejected - not saved to file")
+                    print(f"\nPress Button A to start a fresh recording of episode {current_episode + 1}")
+                    print("Or press Ctrl+C to finish recording.\n")
+                    
+            except KeyboardInterrupt:
+                print("\n\n⚠ Stopping recording...")
+                break
         
         logger.info(f"\n{'='*70}")
-        logger.info(f"Recording complete! {episodes_recorded} episodes saved.")
+        logger.info(f"Recording complete! {current_episode - start_episode} episode(s) saved in this session.")
+        logger.info(f"Total episodes in file: {current_episode}")
         logger.info(f"{'='*70}\n")
-        
-        dataset.finalize()
-        logger.info("Dataset finalized!")
-        
-        # Upload to hub if requested
-        if args.push_to_hub:
-            logger.info("Uploading dataset to Hugging Face Hub...")
-            dataset.push_to_hub()
-            logger.info("Upload complete!")
         
     finally:
         logger.info("Shutting down recording controller...")

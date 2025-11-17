@@ -11,12 +11,11 @@ python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
 
 python3 examples/franka_fr3_logos/record_dataset.py \
     --robot_id franka_fr3 \
-    --dataset_repo_id franka_fr3/franka_fr3_softtoy_in_drawer \
-    --dataset_root datasets/franka_fr3_softtoy_in_drawer \
-    --task "pick up the soft toy and place it in the drawer and close it" \
+    --output_path datasets/franka_fr3_softtoy_in_drawer/data.h5 \
     --num_episodes 2 \
     --fps 30 \
-    --image_size 96 96
+    --image_size 96 96 \
+    # --resume  # Uncomment to resume recording on existing dataset
 
 python examples/franka_fr3_logos/visualize_dataset.py --repo-id franka_fr3_softtoy_in_drawer --root ./datasets/franka_fr3_softtoy_in_drawer --all-episodes
 
