@@ -104,6 +104,47 @@ lerobot-train \
   --policy.empty_cameras=0 \
   --policy.device=cuda
 
+lerobot-train \
+  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --policy.type=pi05 \
+  --policy.pretrained_path=lerobot/pi05_base \
+  --policy.compile_model=true \
+  --policy.gradient_checkpointing=true \
+  --policy.push_to_hub=false \
+  --policy.dtype=bfloat16 \
+  --output_dir=outputs/train/pi05_franka_fr3_softtoy \
+  --job_name=pi05_franka_fr3_softtoy \
+  --steps=20000 \
+  --batch_size=32 \
+  --log_freq=250 \
+  --save_freq=5000 \
+  --eval_freq=0 \
+  --wandb.enable=false \
+  --policy.device=cuda
+
+# Multi-GPU training on GPUs 2-5
+export CUDA_VISIBLE_DEVICES=2,3,4,5
+accelerate launch \
+  --multi_gpu \
+  --num_processes=4 \
+  $(which lerobot-train) \
+  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --output_dir=outputs/train/groot_franka_fr3_softtoy \
+  --save_checkpoint=true \
+  --batch_size=8 \
+  --steps=20000 \
+  --save_freq=2000 \
+  --log_freq=100 \
+  --policy.push_to_hub=false \
+  --policy.type=groot \
+  --policy.repo_id=groot_franka_fr3_softtoy \
+  --policy.tune_diffusion_model=false \
+  --wandb.enable=false \
+  --wandb.disable_artifact=true \
+  --job_name=groot_franka_fr3_softtoy
+
 # Deployment Setup
 ---------------------------------------------
 python3 examples/franka_fr3_logos/deploy_policy_server.py \
