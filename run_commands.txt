@@ -35,12 +35,12 @@ lerobot-train \
   --log_freq=250 \
   --save_freq=5000 \
   --eval_freq=0 \
-  --wandb.enable=false \
+  --wandb.enable=true \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
-  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --dataset.root=datasets/pick_up_panda_task \
+  --dataset.repo_id=pick_up_panda_task \
   --policy.type=diffusion \
   --policy.n_obs_steps=2 \
   --policy.horizon=16 \
@@ -48,14 +48,14 @@ lerobot-train \
   --policy.noise_scheduler_type=DDIM \
   --policy.crop_shape=null \
   --policy.push_to_hub=false \
-  --output_dir=outputs/train/diffusion_franka_fr3_softtoy \
-  --job_name=diffusion_franka_fr3_softtoy \
+  --output_dir=outputs/train/diffusion_pick_up_panda_task \
+  --job_name=diffusion_pick_up_panda_task \
   --steps=100000 \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=5000 \
   --eval_freq=0 \
-  --wandb.enable=false \
+  --wandb.enable=true \
   --policy.device=cuda
 
 # use when finetuning on the same embodiment
@@ -83,8 +83,8 @@ lerobot-train \
 
 # use when finetuning on the different embodiments
 lerobot-train \
-  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
-  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --dataset.root=datasets/multi_task_1 \
+  --dataset.repo_id=multi_task_1 \
   --policy.type=smolvla \
   --policy.pretrained_path=lerobot/smolvla_base \
   --policy.chunk_size=50 \
@@ -93,34 +93,34 @@ lerobot-train \
   --policy.train_expert_only=true \
   --policy.train_state_proj=true \
   --policy.push_to_hub=false \
-  --output_dir=outputs/train/smolvla_franka_fr3_softtoy \
-  --job_name=smolvla_franka_fr3_softtoy \
-  --steps=20000 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/smolvla_multi_task_1 \
+  --job_name=smolvla_multi_task_1 \
+  --steps=100000 \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=5000 \
   --eval_freq=0 \
-  --wandb.enable=false \
+  --wandb.enable=true \
   --policy.empty_cameras=0 \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
-  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --dataset.root=datasets/multi_task_1 \
+  --dataset.repo_id=multi_task_1 \
   --policy.type=pi05 \
   --policy.pretrained_path=lerobot/pi05_base \
   --policy.compile_model=true \
   --policy.gradient_checkpointing=true \
   --policy.push_to_hub=false \
   --policy.dtype=bfloat16 \
-  --output_dir=outputs/train/pi05_franka_fr3_softtoy \
-  --job_name=pi05_franka_fr3_softtoy \
+  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_multi_task_1 \
+  --job_name=pi05_multi_task_1 \
   --steps=20000 \
   --batch_size=32 \
   --log_freq=250 \
   --save_freq=5000 \
   --eval_freq=0 \
-  --wandb.enable=false \
+  --wandb.enable=true \
   --policy.device=cuda
 
 # Multi-GPU training on GPUs 2-5
@@ -129,9 +129,9 @@ accelerate launch \
   --multi_gpu \
   --num_processes=4 \
   $(which lerobot-train) \
-  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
-  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
-  --output_dir=outputs/train/groot_franka_fr3_softtoy \
+  --dataset.root=datasets/multi_task_1 \
+  --dataset.repo_id=multi_task_1 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/groot_multi_task_1 \
   --save_checkpoint=true \
   --batch_size=8 \
   --steps=20000 \
@@ -139,11 +139,11 @@ accelerate launch \
   --log_freq=100 \
   --policy.push_to_hub=false \
   --policy.type=groot \
-  --policy.repo_id=groot_franka_fr3_softtoy \
+  --policy.repo_id=groot_multi_task_1 \
   --policy.tune_diffusion_model=false \
-  --wandb.enable=false \
+  --wandb.enable=true \
   --wandb.disable_artifact=true \
-  --job_name=groot_franka_fr3_softtoy
+  --job_name=groot_multi_task_1
 
 # Deployment Setup
 ---------------------------------------------
