@@ -52,21 +52,28 @@ from lerobot.utils.constants import ACTION, OBS_STR
 from lerobot.utils.rotation import Rotation
 
 
-def create_robot_config(use_ee: bool = False):
-    """Create robot configuration with camera settings matching H5 data (96x96 images)."""
+def create_robot_config(use_ee: bool = False, image_height: int = 224, image_width: int = 224, fps: int = 30):
+    """Create robot configuration with camera settings matching H5 data.
+    
+    Args:
+        use_ee: Whether to use end-effector space
+        image_height: Height of camera images
+        image_width: Width of camera images
+        fps: Frames per second
+    """
     # Camera configuration matching H5 data dimensions
     camera_configs = {
         "front_img": RealSenseCameraConfig(
             serial_number_or_name="938422074102",
-            width=96,
-            height=96,
-            fps=10,
+            width=image_width,
+            height=image_height,
+            fps=fps,
         ),
         "wrist_img": RealSenseCameraConfig(
             serial_number_or_name="919122070360",
-            width=96,
-            height=96,
-            fps=10,
+            width=image_width,
+            height=image_height,
+            fps=fps,
         ),
     }
     
@@ -141,6 +148,7 @@ def convert_h5_to_lerobot(
     ee_frame_name: str = "fr3_hand_tcp",
     joint_names: list[str] | None = None,
     task_name: str | None = None,
+    skip_demos: list[int] | None = None,
     logger: logging.Logger | None = None,
 ):
     """
@@ -156,6 +164,7 @@ def convert_h5_to_lerobot(
         ee_frame_name: Name of the end-effector frame in URDF (default: "fr3_hand_tcp")
         joint_names: List of joint names for FK (default: None, uses all joints)
         task_name: Default task name if language file is not found (default: None, uses h5 filename)
+        skip_demos: List of demo numbers (0-indexed) to skip during conversion (default: None, skips empty demos)
         logger: Logger instance for logging messages (default: None, creates a new logger)
     """
     if logger is None:
@@ -165,6 +174,32 @@ def convert_h5_to_lerobot(
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Repository ID: {repo_id}")
     logger.info(f"Use end-effector space: {use_ee}")
+    
+    # Load metadata from H5 file (fps and image size)
+    with h5py.File(h5_path, 'r') as f:
+        # Extract metadata if available
+        if 'fps' in f.attrs:
+            fps_from_metadata = int(f.attrs['fps'])
+            logger.info(f"Using FPS from H5 metadata: {fps_from_metadata}")
+            fps = fps_from_metadata
+        else:
+            logger.warning(f"No FPS metadata found in H5 file, using provided fps: {fps}")
+        
+        if 'image_height' in f.attrs and 'image_width' in f.attrs:
+            image_height = int(f.attrs['image_height'])
+            image_width = int(f.attrs['image_width'])
+            logger.info(f"Using image size from H5 metadata: {image_height}x{image_width}")
+        else:
+            # Fallback: try to infer from first episode
+            logger.warning("No image size metadata found in H5 file, attempting to infer from data")
+            try:
+                first_demo = f['data'][next(key for key in f['data'].keys() if key.startswith('demo_'))]
+                first_img = first_demo['front_img'][0]
+                image_height, image_width = first_img.shape[:2]
+                logger.info(f"Inferred image size from data: {image_height}x{image_width}")
+            except:
+                image_height, image_width = 224, 224
+                logger.warning(f"Could not infer image size, using default: {image_height}x{image_width}")
     
     # Automatically look for language descriptions file with same name as h5 file
     language_descriptions = None
@@ -212,7 +247,7 @@ def convert_h5_to_lerobot(
         )
     
     # Create robot configuration to get features dynamically
-    robot_config = create_robot_config(use_ee=use_ee)
+    robot_config = create_robot_config(use_ee=use_ee, image_height=image_height, image_width=image_width, fps=fps)
     robot = make_robot_from_config(robot_config)
     
     # Get features from robot configuration
@@ -271,6 +306,9 @@ def convert_h5_to_lerobot(
             logger.info(f"Found {len(demo_keys)} demonstrations")
             
             for episode_idx, demo_key in enumerate(demo_keys):
+                # Extract demo number from demo_key (e.g., "demo_0" -> 0)
+                demo_num = int(demo_key.split('_')[1])
+                
                 logger.info(f"Processing episode {episode_idx}: {demo_key}")
                 
                 demo_data = data_group[demo_key]
@@ -279,6 +317,11 @@ def convert_h5_to_lerobot(
                 front_imgs = np.array(demo_data['front_img'])
                 wrist_imgs = np.array(demo_data['wrist_img'])
                 joint_states = np.array(demo_data['joint_states'])
+                
+                # Skip demonstrations if specified in skip_demos list
+                if skip_demos is not None and demo_num in skip_demos:
+                    logger.info(f"Skipping {demo_key} (demo {demo_num}): specified in skip_demos list")
+                    continue
                 
                 # Extract joint positions and gripper state (now combined)
                 observation_state = extract_joint_positions_from_h5(joint_states)
@@ -409,6 +452,15 @@ def main():
              "If not provided, uses the h5 filename (without extension). "
              "The script automatically looks for a .txt file with the same name as the h5 file."
     )
+    parser.add_argument(
+        "--skip_demos",
+        type=int,
+        nargs="*",
+        default=None,
+        help="List of demo numbers (0-indexed) to skip during conversion. "
+             "Example: --skip_demos 0 2 5 will skip episodes 0, 2, and 5. "
+             "If not provided, empty demos will only be warned about but not skipped."
+    )
     
     args = parser.parse_args()
     
@@ -437,6 +489,7 @@ def main():
         ee_frame_name=args.ee_frame_name,
         joint_names=args.joint_names,
         task_name=args.task_name,
+        skip_demos=args.skip_demos,
         logger=logger,
     )
 

@@ -218,6 +218,7 @@ def main():
     robot_config = FrankaFR3Config(
         id=args.robot_id,
         cameras=camera_configs,
+        dt=1/args.fps
     )
     
     # Add safety parameters if provided
@@ -422,6 +423,16 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger):
     # Load policy
     logger.info(f"Loading {args.policy_type} policy from {checkpoint_path}...")
     policy = get_policy_class(args.policy_type).from_pretrained(str(checkpoint_path))
+    
+    if args.policy_type in ["pi05", "pi0"]:
+        if hasattr(policy, 'model') and hasattr(policy.model, 'sample_actions'):
+            # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
+            # If sample_actions was compiled, replace it with the original uncompiled version
+            # torch.compile wraps methods, we need to get the original
+            if hasattr(policy.model.sample_actions, '__wrapped__'):
+                policy.model.sample_actions = policy.model.sample_actions.__wrapped__
+            logger.info("Disabled torch.compile for inference")
+    
     policy.to(device)
     policy.eval()
     

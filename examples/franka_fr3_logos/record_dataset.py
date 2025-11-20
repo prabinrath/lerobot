@@ -158,7 +158,8 @@ def record_episode(robot, episode_idx, fps, controller, image_size=None):
             'front_img': (T, H, W, 3) numpy array,
             'wrist_img': (T, H, W, 3) numpy array,
             'joint_states': (T, 3, 8) numpy array - [position, velocity, acceleration] x 8 joints,
-            'command': (T, 7) numpy array - commanded joint positions (arm joints only)
+            'command': (T, 7) numpy array - commanded joint positions (arm joints only),
+            'timestamp': (T,) numpy array - timestamps for each frame
         }
     """
     print(f"\n{'='*70}")
@@ -184,10 +185,14 @@ def record_episode(robot, episode_idx, fps, controller, image_size=None):
     wrist_imgs = []
     joint_states = []  # Will store (3, 8) arrays: [position, velocity, acceleration] x 8 joints
     commands = []  # Will store commanded joint positions (7 arm joints)
+    timestamps = []  # Will store timestamps for each frame
     
     try:
         while controller.is_recording():
             loop_start = time.perf_counter()
+            
+            # Record timestamp (relative to start of episode)
+            current_timestamp = time.perf_counter() - start_time
             
             # Get current observation from robot
             obs = robot.get_observation()
@@ -235,6 +240,7 @@ def record_episode(robot, episode_idx, fps, controller, image_size=None):
             wrist_imgs.append(wrist_img)
             joint_states.append(joint_state)
             commands.append(command)
+            timestamps.append(current_timestamp)
             
             # Maintain control frequency
             elapsed = time.perf_counter() - loop_start
@@ -257,7 +263,8 @@ def record_episode(robot, episode_idx, fps, controller, image_size=None):
             'front_img': np.array(front_imgs, dtype=np.uint8),
             'wrist_img': np.array(wrist_imgs, dtype=np.uint8),
             'joint_states': np.array(joint_states, dtype=np.float32),
-            'command': np.array(commands, dtype=np.float32)
+            'command': np.array(commands, dtype=np.float32),
+            'timestamp': np.array(timestamps, dtype=np.float64)
         }
         
     except KeyboardInterrupt:
@@ -271,7 +278,7 @@ def save_episode_to_h5(h5_file, episode_data, episode_idx):
     
     Args:
         h5_file: Open h5py.File object
-        episode_data: Dictionary with 'front_img', 'wrist_img', 'joint_states', 'command'
+        episode_data: Dictionary with 'front_img', 'wrist_img', 'joint_states', 'command', 'timestamp'
         episode_idx: Episode index
     """
     demo_name = f"demo_{episode_idx}"
@@ -282,6 +289,7 @@ def save_episode_to_h5(h5_file, episode_data, episode_idx):
     demo_group.create_dataset('wrist_img', data=episode_data['wrist_img'], compression='gzip')
     demo_group.create_dataset('joint_states', data=episode_data['joint_states'], compression='gzip')
     demo_group.create_dataset('command', data=episode_data['command'], compression='gzip')
+    demo_group.create_dataset('timestamp', data=episode_data['timestamp'], compression='gzip')
     
     # Flush to ensure data is written
     h5_file.flush()
@@ -404,6 +412,29 @@ def main():
             logger.info(f"Creating new H5 file: {output_path}")
             with h5py.File(output_path, 'w') as f:
                 f.create_group('data')
+                # Save metadata
+                f.attrs['fps'] = args.fps
+                f.attrs['image_height'] = args.image_size[0]
+                f.attrs['image_width'] = args.image_size[1]
+        else:
+            # For resume mode, verify metadata matches
+            with h5py.File(output_path, 'r') as f:
+                if 'fps' in f.attrs:
+                    existing_fps = f.attrs['fps']
+                    if existing_fps != args.fps:
+                        logger.error(f"Existing FPS ({existing_fps}) differs from specified FPS ({args.fps})")
+                        logger.error("Cannot resume with different FPS. Use the same FPS as the existing file.")
+                        return 1
+                if 'image_height' in f.attrs and 'image_width' in f.attrs:
+                    existing_height = f.attrs['image_height']
+                    existing_width = f.attrs['image_width']
+                    if existing_height != args.image_size[0] or existing_width != args.image_size[1]:
+                        logger.error(
+                            f"Existing image size ({existing_height}x{existing_width}) "
+                            f"differs from specified size ({args.image_size[0]}x{args.image_size[1]})"
+                        )
+                        logger.error("Cannot resume with different image size. Use the same image size as the existing file.")
+                        return 1
         
         current_episode = start_episode
         
