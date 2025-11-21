@@ -19,6 +19,11 @@ python3 examples/franka_fr3_logos/record_dataset.py \
 
 python examples/franka_fr3_logos/visualize_dataset.py --repo-id franka_fr3_softtoy_in_drawer --root ./datasets/franka_fr3_softtoy_in_drawer --all-episodes
 
+python examples/franka_fr3_logos/merge_datasets.py \
+    --dataset_names franka_fr3_lion_in_basket franka_fr3_monkey_in_basket franka_fr3_panda_in_basket franka_fr3_tiger_in_basket \
+    --output_name franka_fr3_in_basket \
+    --datasets_dir ./datasets
+
 # Training Setup
 ---------------------------------------------
 lerobot-train \
