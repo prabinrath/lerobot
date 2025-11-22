@@ -149,6 +149,7 @@ def convert_h5_to_lerobot(
     joint_names: list[str] | None = None,
     task_name: str | None = None,
     skip_demos: list[int] | None = None,
+    down_sample_factor: int = 1,
     logger: logging.Logger | None = None,
 ):
     """
@@ -165,6 +166,7 @@ def convert_h5_to_lerobot(
         joint_names: List of joint names for FK (default: None, uses all joints)
         task_name: Default task name if language file is not found (default: None, uses h5 filename)
         skip_demos: List of demo numbers (0-indexed) to skip during conversion (default: None, skips empty demos)
+        down_sample_factor: Factor by which to downsample the data (default: 1, no downsampling)
         logger: Logger instance for logging messages (default: None, creates a new logger)
     """
     if logger is None:
@@ -174,6 +176,7 @@ def convert_h5_to_lerobot(
     logger.info(f"Output directory: {output_dir}")
     logger.info(f"Repository ID: {repo_id}")
     logger.info(f"Use end-effector space: {use_ee}")
+    logger.info(f"Downsampling factor: {down_sample_factor}")
     
     # Load metadata from H5 file (fps and image size)
     with h5py.File(h5_path, 'r') as f:
@@ -184,6 +187,17 @@ def convert_h5_to_lerobot(
             fps = fps_from_metadata
         else:
             logger.warning(f"No FPS metadata found in H5 file, using provided fps: {fps}")
+        
+        # Validate that fps is divisible by down_sample_factor
+        if fps % down_sample_factor != 0:
+            raise ValueError(
+                f"FPS ({fps}) must be divisible by down_sample_factor ({down_sample_factor}). "
+                f"Resulting FPS would be {fps / down_sample_factor}, which is not an integer."
+            )
+        
+        # Calculate final FPS after downsampling
+        final_fps = fps // down_sample_factor
+        logger.info(f"Dataset FPS after downsampling: {final_fps}")
         
         if 'image_height' in f.attrs and 'image_width' in f.attrs:
             image_height = int(f.attrs['image_height'])
@@ -247,7 +261,7 @@ def convert_h5_to_lerobot(
         )
     
     # Create robot configuration to get features dynamically
-    robot_config = create_robot_config(use_ee=use_ee, image_height=image_height, image_width=image_width, fps=fps)
+    robot_config = create_robot_config(use_ee=use_ee, image_height=image_height, image_width=image_width, fps=final_fps)
     robot = make_robot_from_config(robot_config)
     
     # Get features from robot configuration
@@ -287,7 +301,7 @@ def convert_h5_to_lerobot(
     # Create LeRobot dataset with video support
     dataset = LeRobotDataset.create(
         repo_id=repo_id,
-        fps=fps,
+        fps=final_fps,
         root=output_dir,
         robot_type="franka_fr3",
         features=features,
@@ -313,15 +327,25 @@ def convert_h5_to_lerobot(
                 
                 demo_data = data_group[demo_key]
                 
+                # Skip demonstrations if specified in skip_demos list
+                if skip_demos is not None and demo_num in skip_demos:
+                    logger.info(f"Skipping {demo_key} (demo {demo_num}): specified in skip_demos list")
+                    continue
+                
                 # Extract data
                 front_imgs = np.array(demo_data['front_img'])
                 wrist_imgs = np.array(demo_data['wrist_img'])
                 joint_states = np.array(demo_data['joint_states'])
                 
-                # Skip demonstrations if specified in skip_demos list
-                if skip_demos is not None and demo_num in skip_demos:
-                    logger.info(f"Skipping {demo_key} (demo {demo_num}): specified in skip_demos list")
-                    continue
+                # Apply downsampling if needed
+                if down_sample_factor > 1:
+                    total_len = len(front_imgs)
+                    indices = np.linspace(0, total_len - 1, total_len // down_sample_factor).astype(int)
+                    logger.info(f"Downsampling from {total_len} frames to {len(indices)} frames (factor: {down_sample_factor})")
+                    
+                    front_imgs = front_imgs[indices]
+                    wrist_imgs = wrist_imgs[indices]
+                    joint_states = joint_states[indices]
                 
                 # Extract joint positions and gripper state (now combined)
                 observation_state = extract_joint_positions_from_h5(joint_states)
@@ -330,6 +354,11 @@ def convert_h5_to_lerobot(
                 # Command from H5 has 7 values (arm joints), we need to add gripper from observations
                 if 'command' in demo_data:
                     commands_7dof = np.array(demo_data['command'])  # Shape: (T, 7)
+                    
+                    # Apply downsampling to commands if needed
+                    if down_sample_factor > 1:
+                        commands_7dof = commands_7dof[indices]
+                    
                     # Append gripper values from observation_state to make it (T, 8)
                     gripper_values = observation_state[:, -1:]  # Shape: (T, 1) - last column is gripper
                     commands = np.concatenate([commands_7dof, gripper_values], axis=1)  # Shape: (T, 8)
@@ -461,6 +490,14 @@ def main():
              "Example: --skip_demos 0 2 5 will skip episodes 0, 2, and 5. "
              "If not provided, empty demos will only be warned about but not skipped."
     )
+    parser.add_argument(
+        "--down_sample_factor",
+        type=int,
+        default=1,
+        help="Factor by which to downsample the data (default: 1, no downsampling). "
+             "The original FPS must be divisible by this factor. "
+             "Final dataset FPS will be original_fps / down_sample_factor."
+    )
     
     args = parser.parse_args()
     
@@ -490,6 +527,7 @@ def main():
         joint_names=args.joint_names,
         task_name=args.task_name,
         skip_demos=args.skip_demos,
+        down_sample_factor=args.down_sample_factor,
         logger=logger,
     )
 

@@ -3,7 +3,7 @@
 python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
     --h5_path /home/local/ASUAD/prath4/Downloads/codig_robot_datasets/softtoy_in_drawer.h5 \
     --output_dir ./datasets/franka_fr3_softtoy_in_drawer \
-    --repo_id franka_fr3/softtoy_in_drawer \
+    --repo_id franka_fr3/softtoy_in_drawer --down_sample_factor 3 \
     # --use_ee \
     # --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
     # --ee_frame_name fr3_hand_tcp
