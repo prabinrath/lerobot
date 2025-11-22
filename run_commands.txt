@@ -21,7 +21,7 @@ python examples/franka_fr3_logos/visualize_dataset.py --repo-id franka_fr3_softt
 
 python examples/franka_fr3_logos/merge_datasets.py \
     --dataset_names franka_fr3_lion_in_basket franka_fr3_monkey_in_basket franka_fr3_panda_in_basket franka_fr3_tiger_in_basket \
-    --output_name franka_fr3_in_basket \
+    --output_name multi_task_in_basket \
     --datasets_dir ./datasets
 
 # Training Setup
@@ -41,6 +41,7 @@ lerobot-train \
   --save_freq=5000 \
   --eval_freq=0 \
   --wandb.enable=true \
+  --wandb.disable_artifact=true \
   --policy.device=cuda
 
 lerobot-train \
@@ -61,6 +62,7 @@ lerobot-train \
   --save_freq=5000 \
   --eval_freq=0 \
   --wandb.enable=true \
+  --wandb.disable_artifact=true \
   --policy.device=cuda
 
 # use when finetuning on the same embodiment
@@ -82,14 +84,15 @@ lerobot-train \
   --save_freq=5000 \
   --eval_freq=0 \
   --wandb.enable=false \
+  --wandb.disable_artifact=true \
   --policy.device=cuda \
   --policy.empty_cameras=0 \
   --rename_map='{"observation.images.front_img": "observation.images.camera1", "observation.images.wrist_img": "observation.images.camera2"}'
 
 # use when finetuning on the different embodiments
 lerobot-train \
-  --dataset.root=datasets/multi_task_1 \
-  --dataset.repo_id=multi_task_1 \
+  --dataset.root=datasets/multi_task_in_basket \
+  --dataset.repo_id=multi_task_in_basket \
   --policy.type=smolvla \
   --policy.pretrained_path=lerobot/smolvla_base \
   --policy.chunk_size=50 \
@@ -98,34 +101,36 @@ lerobot-train \
   --policy.train_expert_only=true \
   --policy.train_state_proj=true \
   --policy.push_to_hub=false \
-  --output_dir=/mount/scratch3/prabin/outputs/train/smolvla_multi_task_1 \
-  --job_name=smolvla_multi_task_1 \
-  --steps=100000 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/smolvla_multi_task_in_basket \
+  --job_name=smolvla_multi_task_in_basket \
+  --steps=20000 \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=5000 \
   --eval_freq=0 \
   --wandb.enable=true \
+  --wandb.disable_artifact=true \
   --policy.empty_cameras=0 \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/multi_task_1 \
-  --dataset.repo_id=multi_task_1 \
+  --dataset.root=datasets/multi_task_in_basket \
+  --dataset.repo_id=multi_task_in_basket \
   --policy.type=pi05 \
   --policy.pretrained_path=lerobot/pi05_base \
   --policy.compile_model=true \
   --policy.gradient_checkpointing=true \
   --policy.push_to_hub=false \
   --policy.dtype=bfloat16 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_multi_task_1 \
-  --job_name=pi05_multi_task_1 \
-  --steps=20000 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_multi_task_in_basket \
+  --job_name=pi05_multi_task_in_basket \
+  --steps=6000 \
   --batch_size=32 \
   --log_freq=250 \
-  --save_freq=5000 \
+  --save_freq=1000 \
   --eval_freq=0 \
   --wandb.enable=true \
+  --wandb.disable_artifact=true \
   --policy.device=cuda
 
 # Multi-GPU training on GPUs 2-5
@@ -134,9 +139,9 @@ accelerate launch \
   --multi_gpu \
   --num_processes=4 \
   $(which lerobot-train) \
-  --dataset.root=datasets/multi_task_1 \
-  --dataset.repo_id=multi_task_1 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/groot_multi_task_1 \
+  --dataset.root=datasets/multi_task_in_basket \
+  --dataset.repo_id=multi_task_in_basket \
+  --output_dir=/mount/scratch3/prabin/outputs/train/groot_multi_task_in_basket \
   --save_checkpoint=true \
   --batch_size=8 \
   --steps=20000 \
@@ -144,11 +149,11 @@ accelerate launch \
   --log_freq=100 \
   --policy.push_to_hub=false \
   --policy.type=groot \
-  --policy.repo_id=groot_multi_task_1 \
+  --policy.repo_id=groot_multi_task_in_basket \
   --policy.tune_diffusion_model=false \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
-  --job_name=groot_multi_task_1
+  --job_name=groot_multi_task_in_basket
 
 # Deployment Setup
 ---------------------------------------------
