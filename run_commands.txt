@@ -1,13 +1,15 @@
 # Dataset Setup
 ---------------------------------------------
 python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
-    --h5_path /home/local/ASUAD/prath4/Downloads/codig_robot_datasets/softtoy_in_drawer.h5 \
-    --output_dir ./datasets/franka_fr3_softtoy_in_drawer \
-    --repo_id franka_fr3/softtoy_in_drawer --down_sample_factor 3 \
-    # --use_ee \
-    # --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
-    # --ee_frame_name fr3_hand_tcp
-    # --language_file examples/franka_fr3_logos/task_descriptions.txt  # Uncomment to add paraphrased language annotations
+    --h5_path /home/local/ASUAD/prath4/Downloads/raw_datasets/panda_from_clutter_to_basket.h5 \
+    --output_dir ./datasets/franka_fr3_panda_from_clutter_to_basket_ee \
+    --repo_id franka_fr3/panda_from_clutter_to_basket_ee \
+    --down_sample_factor 3 \
+    --use_ee \
+    --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
+    --ee_frame_name fr3_hand_tcp \
+    --fps 30 \
+    --skip_demos 30
 
 python3 examples/franka_fr3_logos/record_dataset.py \
     --robot_id franka_fr3 \
@@ -45,8 +47,8 @@ lerobot-train \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/pick_up_panda_task \
-  --dataset.repo_id=pick_up_panda_task \
+  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
+  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
   --policy.type=diffusion \
   --policy.n_obs_steps=2 \
   --policy.horizon=16 \
@@ -54,12 +56,12 @@ lerobot-train \
   --policy.noise_scheduler_type=DDIM \
   --policy.crop_shape=null \
   --policy.push_to_hub=false \
-  --output_dir=outputs/train/diffusion_pick_up_panda_task \
-  --job_name=diffusion_pick_up_panda_task \
+  --output_dir=outputs/train/diffusion_franka_fr3_softtoy_in_drawer \
+  --job_name=diffusion_franka_fr3_softtoy_in_drawer \
   --steps=100000 \
   --batch_size=64 \
   --log_freq=250 \
-  --save_freq=5000 \
+  --save_freq=20000 \
   --eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \

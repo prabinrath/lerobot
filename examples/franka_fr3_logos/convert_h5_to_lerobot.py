@@ -118,7 +118,7 @@ def convert_joints_to_ee(joint_positions: np.ndarray, kinematics: RobotKinematic
     
     for i in range(num_timesteps):
         # Extract joint positions (first 7 values, excluding gripper)
-        joints = joint_positions[i, :7]
+        joints = joint_positions[i, :7].astype(float)
         
         # Compute forward kinematics -> returns 4x4 transformation matrix
         # Note: RobotKinematics expects joint positions in degrees
@@ -281,13 +281,14 @@ def convert_h5_to_lerobot(
                 name.removesuffix(".pos") for name in obs_features[feature_key]["names"]
             ]
     
-    # Add command feature to observations (commanded joint positions)
-    # The command feature has all joint names (including gripper for 8 total)
+    # Add command feature to observations (commanded positions)
+    # When use_ee=True, command is in EE space; otherwise in joint space
+    command_names = robot_config.ee_names if use_ee else robot_config.joint_names
     command_feature = {
         "observation.command": {
             "dtype": "float32",
-            "shape": (len(robot.joint_names),),  # All joints including gripper
-            "names": robot.joint_names,
+            "shape": (len(command_names),),
+            "names": command_names,
         }
     }
     
@@ -370,6 +371,7 @@ def convert_h5_to_lerobot(
                 if use_ee:
                     logger.info(f"Converting joint positions to EE poses for episode {episode_idx}")
                     observation_state = convert_joints_to_ee(observation_state, kinematics)
+                    commands = convert_joints_to_ee(commands, kinematics)
                 
                 episode_length = len(front_imgs)
                 logger.info(f"Episode {episode_idx} has {episode_length} frames")
