@@ -59,10 +59,11 @@ logger = logging.getLogger(__name__)
 
 
 class EpisodeSampler(torch.utils.data.Sampler):
-    def __init__(self, dataset: LeRobotDataset, episode_index: int):
-        from_idx = dataset.meta.episodes["dataset_from_index"][episode_index]
-        to_idx = dataset.meta.episodes["dataset_to_index"][episode_index]
-        self.frame_ids = range(from_idx, to_idx)
+    """Sampler that iterates over all frames in a loaded dataset."""
+
+    def __init__(self, dataset: LeRobotDataset):
+        # When loading dataset with specific episodes, it gets re-indexed starting from 0
+        self.frame_ids = range(len(dataset))
 
     def __iter__(self):
         return iter(self.frame_ids)
@@ -99,7 +100,7 @@ def visualize_dataset(
     repo_id = dataset.repo_id
 
     logger.info("Loading dataloader")
-    episode_sampler = EpisodeSampler(dataset, episode_index)
+    episode_sampler = EpisodeSampler(dataset)
     dataloader = torch.utils.data.DataLoader(
         dataset,
         num_workers=num_workers,
