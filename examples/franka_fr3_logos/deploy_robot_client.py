@@ -28,6 +28,15 @@ Example (sync):
         --policy_type diffusion \
         --task "pick up the soft toy and place it in the drawer" \
         --fps 10
+
+Example (with end-effector control):
+    python deploy_robot_client.py \
+        --use_sync_inference \
+        --use_ee \
+        --checkpoint_path outputs/train/diffusion_franka_fr3_ee_softtoy/checkpoints/last/pretrained_model \
+        --policy_type diffusion \
+        --task "pick and place task" \
+        --fps 10
 """
 
 import argparse
@@ -132,6 +141,13 @@ def main():
         help="Maximum relative joint movement per step for safety (robot-specific)"
     )
     
+    # Robot control space
+    parser.add_argument(
+        "--use_ee",
+        action="store_true",
+        help="Use end-effector space instead of joint space (for policies trained on EE datasets)"
+    )
+    
     # Inference mode
     parser.add_argument(
         "--use_sync_inference", 
@@ -218,7 +234,8 @@ def main():
     robot_config = FrankaFR3Config(
         id=args.robot_id,
         cameras=camera_configs,
-        dt=1/args.fps
+        dt=1/args.fps,
+        use_ee=args.use_ee
     )
     
     # Add safety parameters if provided
@@ -230,6 +247,7 @@ def main():
     logger.info("Franka FR3 Policy Deployment Client")
     logger.info("="*70)
     logger.info(f"Robot ID: {robot_config.id}")
+    logger.info(f"Control Space: {'End-Effector (EE)' if args.use_ee else 'Joint Space'}")
     logger.info(f"Policy Type: {args.policy_type.upper()}")
     logger.info(f"Policy Checkpoint: {checkpoint_path}")
     logger.info(f"Policy Device: {args.policy_device}")

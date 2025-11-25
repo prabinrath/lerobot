@@ -16,10 +16,13 @@
 
 import logging
 from functools import cached_property
+from pathlib import Path
 from typing import Any
 
 import numpy as np
+from lerobot.model.kinematics import RobotKinematics
 from lerobot.utils.errors import DeviceAlreadyConnectedError, DeviceNotConnectedError
+from lerobot.utils.rotation import Rotation
 
 from ..robot import Robot
 from .config_franka_fr3 import FrankaFR3Config
@@ -52,6 +55,23 @@ class FrankaFR3(Robot):
         
         # ROS2 interface (initialized on connect)
         self.franka_interface = None
+        
+        # Kinematics for end-effector control (initialized if use_ee=True)
+        self.kinematics = None
+        if config.use_ee:
+            # Get URDF path from robot package directory
+            urdf_path = Path(__file__).parent / "franka_fr3_kinematics.urdf"
+            # Joint names for FK/IK (excluding gripper)
+            fk_joint_names = [
+                "fr3_joint1", "fr3_joint2", "fr3_joint3", "fr3_joint4",
+                "fr3_joint5", "fr3_joint6", "fr3_joint7"
+            ]
+            self.kinematics = RobotKinematics(
+                urdf_path=str(urdf_path),
+                target_frame_name="fr3_hand_tcp",
+                joint_names=fk_joint_names,
+            )
+            logger.info(f"Initialized kinematics for end-effector control with URDF: {urdf_path}")
         
     @property
     def _motors_ft(self) -> dict[str, type]:
@@ -170,7 +190,7 @@ class FrankaFR3(Robot):
         Get current observation from the robot.
         
         Returns:
-            Dictionary containing joint positions and camera images
+            Dictionary containing joint positions (or EE pose if use_ee=True) and camera images
         """
         if not self.is_connected:
             raise DeviceNotConnectedError(f"{self} is not connected")
@@ -182,8 +202,36 @@ class FrankaFR3(Robot):
         if joint_positions is None:
             raise RuntimeError("No joint positions available from Franka interface")
         
-        for i, joint in enumerate(self.joint_names):
-            observation[f"{joint}.pos"] = float(joint_positions[i])
+        # Convert to EE pose if use_ee is enabled
+        if self.config.use_ee:
+            # Extract arm joint positions (first 7 joints, in radians)
+            arm_joints = joint_positions[:7]
+            gripper_pos = joint_positions[7]
+            
+            # Compute forward kinematics (convert radians to degrees for RobotKinematics)
+            ee_transform = self.kinematics.forward_kinematics(np.rad2deg(arm_joints))
+            
+            # Extract position (x, y, z)
+            pos = ee_transform[:3, 3]
+            
+            # Extract orientation as rotation vector (wx, wy, wz) - axis-angle representation
+            rotation_matrix = ee_transform[:3, :3]
+            rotation = Rotation.from_matrix(rotation_matrix)
+            rotvec = rotation.as_rotvec()
+            
+            # Build observation with EE pose
+            for i, name in enumerate(self.config.ee_names[:-1]):  # x, y, z, wx, wy, wz
+                if i < 3:  # position
+                    observation[f"{name}.pos"] = float(pos[i])
+                else:  # orientation (rotation vector)
+                    observation[f"{name}.pos"] = float(rotvec[i - 3])
+            
+            # Add gripper
+            observation[f"{self.config.ee_names[-1]}.pos"] = float(gripper_pos)
+        else:
+            # Joint space - use joint positions directly
+            for i, joint in enumerate(self.joint_names):
+                observation[f"{joint}.pos"] = float(joint_positions[i])
         
         # Get camera images
         for cam_name, cam in self.cameras.items():
@@ -196,7 +244,7 @@ class FrankaFR3(Robot):
         Send action to the robot.
         
         Args:
-            action: Dictionary containing target joint positions
+            action: Dictionary containing target joint positions (or EE pose if use_ee=True)
             
         Returns:
             Dictionary containing the actual action sent (potentially clipped)
@@ -212,13 +260,47 @@ class FrankaFR3(Robot):
         
         # Extract target positions
         target_positions = np.zeros(8)
-        for i, joint in enumerate(self.joint_names):
-            key = f"{joint}.pos"
-            if key in action:
-                target_positions[i] = action[key]
-            else:
-                # Keep current position if not specified
-                target_positions[i] = current_joint_positions[i]
+        
+        if self.config.use_ee:
+            # EE space - convert EE pose to joint positions using inverse kinematics
+            # Extract EE pose from action
+            x = action.get(f"{self.config.ee_names[0]}.pos", None)
+            y = action.get(f"{self.config.ee_names[1]}.pos", None)
+            z = action.get(f"{self.config.ee_names[2]}.pos", None)
+            wx = action.get(f"{self.config.ee_names[3]}.pos", None)
+            wy = action.get(f"{self.config.ee_names[4]}.pos", None)
+            wz = action.get(f"{self.config.ee_names[5]}.pos", None)
+            gripper_pos = action.get(f"{self.config.ee_names[6]}.pos", None)
+            
+            if None in (x, y, z, wx, wy, wz, gripper_pos):
+                raise ValueError(
+                    f"Missing required end-effector pose components in action. "
+                    f"Expected: {[f'{name}.pos' for name in self.config.ee_names]}"
+                )
+            
+            # Build desired 4x4 transform from position + rotation vector (axis-angle)
+            t_des = np.eye(4, dtype=float)
+            t_des[:3, :3] = Rotation.from_rotvec([wx, wy, wz]).as_matrix()
+            t_des[:3, 3] = [x, y, z]
+            
+            # Use current joint positions as initial guess for IK (in degrees)
+            q_curr = np.rad2deg(current_joint_positions[:7])
+            
+            # Compute inverse kinematics (returns joint positions in degrees)
+            q_target_deg = self.kinematics.inverse_kinematics(q_curr, t_des)
+            
+            # Convert back to radians
+            target_positions[:7] = np.deg2rad(q_target_deg)
+            target_positions[7] = gripper_pos
+        else:
+            # Joint space - extract target positions directly
+            for i, joint in enumerate(self.joint_names):
+                key = f"{joint}.pos"
+                if key in action:
+                    target_positions[i] = action[key]
+                else:
+                    # Keep current position if not specified
+                    target_positions[i] = current_joint_positions[i]
         
         # Apply safety limits if configured (only to arm joints, not gripper)
         if self.config.max_relative_target is not None:
@@ -245,10 +327,25 @@ class FrankaFR3(Robot):
         gripper_position = target_positions[7]
         self.franka_interface.send_gripper_position(gripper_position)
         
-        # Return the actual action sent
+        # Return the actual action sent (in the same format as the input)
         sent_action = {}
-        for i, joint in enumerate(self.joint_names):
-            sent_action[f"{joint}.pos"] = float(target_positions[i])
+        if self.config.use_ee:
+            # Convert joint positions back to EE pose for return value
+            ee_transform = self.kinematics.forward_kinematics(np.rad2deg(target_positions[:7]))
+            pos = ee_transform[:3, 3]
+            rotvec = Rotation.from_matrix(ee_transform[:3, :3]).as_rotvec()
+            
+            sent_action[f"{self.config.ee_names[0]}.pos"] = float(pos[0])
+            sent_action[f"{self.config.ee_names[1]}.pos"] = float(pos[1])
+            sent_action[f"{self.config.ee_names[2]}.pos"] = float(pos[2])
+            sent_action[f"{self.config.ee_names[3]}.pos"] = float(rotvec[0])
+            sent_action[f"{self.config.ee_names[4]}.pos"] = float(rotvec[1])
+            sent_action[f"{self.config.ee_names[5]}.pos"] = float(rotvec[2])
+            sent_action[f"{self.config.ee_names[6]}.pos"] = float(target_positions[7])
+        else:
+            # Joint space - return joint positions
+            for i, joint in enumerate(self.joint_names):
+                sent_action[f"{joint}.pos"] = float(target_positions[i])
             
         return sent_action
 
