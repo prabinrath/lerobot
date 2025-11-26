@@ -172,6 +172,14 @@ def main():
         help="Use synchronous inference (run policy locally) instead of async server. Recommended for diffusion policy until async issues are fixed."
     )
     
+    # Rollout parameters
+    parser.add_argument(
+        "--max_rollout_steps",
+        type=int,
+        default=None,
+        help="Maximum number of rollout steps (None for unlimited)"
+    )
+    
     # Debug options
     parser.add_argument(
         "--debug_visualize_queue_size", 
@@ -281,6 +289,7 @@ def main():
         logger.info(f"Aggregate Function: {args.aggregate_fn_name}")
     
     logger.info(f"FPS: {args.fps}")
+    logger.info(f"Max Rollout Steps: {args.max_rollout_steps if args.max_rollout_steps else 'Unlimited'}")
     logger.info(f"Max Relative Target: {getattr(robot_config, 'max_relative_target', 'Not set')}")
     logger.info("="*70)
     
@@ -328,6 +337,7 @@ def run_async_inference(robot_config, checkpoint_path, args, logger):
         fps=args.fps,
         aggregate_fn_name=args.aggregate_fn_name,
         debug_visualize_queue_size=args.debug_visualize_queue_size,
+        max_rollout_steps=args.max_rollout_steps,
     )
     
     # Create and start robot client
@@ -348,6 +358,18 @@ def run_async_inference(robot_config, checkpoint_path, args, logger):
         
         # Run the control loop
         client.control_loop(args.task)
+        
+        # Normal completion (e.g., max_rollout_steps reached)
+        logger.info("Control loop completed.")
+        client.stop()
+        action_receiver_thread.join(timeout=5.0)
+        
+        # Optionally visualize queue size statistics
+        if args.debug_visualize_queue_size and hasattr(client, 'action_queue_size'):
+            logger.info("Displaying action queue size visualization...")
+            visualize_action_queue_size(client.action_queue_size)
+        
+        logger.info("Robot client stopped successfully.")
         
     except KeyboardInterrupt:
         logger.info("Stopping robot client...")
@@ -496,7 +518,8 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger):
 
     try:
         dt = 1.0 / args.fps
-        while True:
+        step = 0
+        while args.max_rollout_steps is None or step < args.max_rollout_steps:
             start_time = time.perf_counter()
             
             obs = robot.get_observation()
@@ -515,6 +538,11 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger):
             elapsed = time.perf_counter() - start_time
             if elapsed < dt:
                 time.sleep(dt - elapsed)
+            
+            step += 1
+        
+        if args.max_rollout_steps is not None:
+            logger.info(f"Completed {step} rollout steps.")
         
     except KeyboardInterrupt:
         logger.info("Stopping robot...")

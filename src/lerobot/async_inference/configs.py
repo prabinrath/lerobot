@@ -152,6 +152,11 @@ class RobotClientConfig:
         default=False, metadata={"help": "Visualize the action queue size"}
     )
 
+    # Rollout configuration
+    max_rollout_steps: int | None = field(
+        default=None, metadata={"help": "Maximum number of rollout steps (None for unlimited)"}
+    )
+
     @property
     def environment_dt(self) -> float:
         """Environment time step, in seconds"""

@@ -447,8 +447,10 @@ class RobotClient:
 
         _performed_action = None
         _captured_observation = None
+        step = 0
+        max_steps = self.config.max_rollout_steps
 
-        while self.running:
+        while self.running and (max_steps is None or step < max_steps):
             control_loop_start = time.perf_counter()
             """Control loop: (1) Performing actions, when available"""
             if self.actions_available():
@@ -461,6 +463,10 @@ class RobotClient:
             self.logger.debug(f"Control loop (ms): {(time.perf_counter() - control_loop_start) * 1000:.2f}")
             # Dynamically adjust sleep time to maintain the desired control frequency
             time.sleep(max(0, self.config.environment_dt - (time.perf_counter() - control_loop_start)))
+            step += 1
+
+        if max_steps is not None and step >= max_steps:
+            self.logger.info(f"Completed {step} rollout steps.")
 
         return _captured_observation, _performed_action
 
