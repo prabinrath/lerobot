@@ -100,15 +100,15 @@ def main():
     parser.add_argument(
         "--policy_type", 
         type=str, 
-        required=True,
-        choices=["act", "diffusion", "vqbet", "smolvla", "groot", "pi0", "pi05"],
-        help="Type of policy to use"
+        default="",
+        choices=["act", "diffusion", "vqbet", "smolvla", "groot", "pi0", "pi05", ""],
+        help="Type of policy to use (can be provided via command in interactive mode)"
     )
     parser.add_argument(
         "--checkpoint_path", 
         type=str, 
-        required=True,
-        help="Path to the trained policy checkpoint"
+        default="",
+        help="Path to the trained policy checkpoint (can be provided via command in interactive mode)"
     )
     parser.add_argument(
         "--policy_device", 
@@ -192,6 +192,13 @@ def main():
         help="Test configuration without connecting to robot"
     )
     
+    # Interactive mode (ROS2 subscriber)
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Run as ROS2 subscriber for interactive rollout control"
+    )
+    
     # Observation remapping
     parser.add_argument(
         "--rename_map",
@@ -210,10 +217,11 @@ def main():
     except json.JSONDecodeError as e:
         raise ValueError(f"Invalid JSON for rename_map: {e}")
     
-    # Validate inputs
-    checkpoint_path = Path(args.checkpoint_path)
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint path does not exist: {checkpoint_path}")
+    # Validate inputs (skip checkpoint validation in interactive mode)
+    checkpoint_path = Path(args.checkpoint_path) if args.checkpoint_path else None
+    if not args.interactive:
+        if not checkpoint_path or not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint path does not exist: {args.checkpoint_path}")
     
     if not 0.0 <= args.chunk_size_threshold <= 1.0:
         raise ValueError(f"chunk_size_threshold must be between 0.0 and 1.0, got {args.chunk_size_threshold}")
@@ -274,7 +282,7 @@ def main():
     logger.info(f"Robot ID: {robot_config.id}")
     logger.info(f"Control Space: {'End-Effector (EE)' if args.use_ee else 'Joint Space'}")
     logger.info(f"Policy Type: {args.policy_type.upper()}")
-    logger.info(f"Policy Checkpoint: {checkpoint_path}")
+    logger.info(f"Policy Checkpoint: {checkpoint_path or 'Will be provided via command'}")
     logger.info(f"Policy Device: {args.policy_device}")
     logger.info(f"Task: {args.task or 'No task specified'}")
     logger.info(f"Cameras ({len(camera_configs)}):")
@@ -298,6 +306,11 @@ def main():
         logger.info("Remove --dry_run flag to actually connect to the robot.")
         return 0
     
+    # Interactive mode: run as ROS2 subscriber
+    if args.interactive:
+        logger.info("Running in INTERACTIVE mode (ROS2 subscriber)")
+        return run_interactive_server(robot_config, args, logger)
+    
     # Choose inference mode
     if args.use_sync_inference:
         logger.info("Using SYNCHRONOUS INFERENCE mode (policy runs locally)")
@@ -307,7 +320,7 @@ def main():
         return run_async_inference(robot_config, checkpoint_path, args, logger)
 
 
-def run_async_inference(robot_config, checkpoint_path, args, logger):
+def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=None):
     """Run with async inference (policy server)
        Note: Policies with n_obs_steps > 1 are not yet supported for Async inference
              as the policy server does not manage the observation queue properly. affected
@@ -318,8 +331,10 @@ def run_async_inference(robot_config, checkpoint_path, args, logger):
         checkpoint_path: Path to policy checkpoint
         args: Command line arguments
         logger: Logger instance to use
+        stop_event: Optional threading.Event to signal early termination
     """
     import threading
+    import time
     from lerobot.async_inference.configs import RobotClientConfig
     from lerobot.async_inference.helpers import visualize_action_queue_size
     from lerobot.async_inference.robot_client import RobotClient
@@ -356,12 +371,24 @@ def run_async_inference(robot_config, checkpoint_path, args, logger):
         action_receiver_thread = threading.Thread(target=client.receive_actions, daemon=True)
         action_receiver_thread.start()
         
-        # Run the control loop
+        # Monitor thread to handle stop signal
+        def stop_monitor():
+            while client.running:
+                if stop_event and stop_event.is_set():
+                    logger.info("Stop signal received, stopping client...")
+                    client.stop()
+                time.sleep(0.1)
+        
+        if stop_event:
+            threading.Thread(target=stop_monitor, daemon=True).start()
+        
+        # Run the control loop (blocking)
         client.control_loop(args.task)
         
         # Normal completion (e.g., max_rollout_steps reached)
         logger.info("Control loop completed.")
-        client.stop()
+        if client.running:
+            client.stop()
         action_receiver_thread.join(timeout=5.0)
         
         # Optionally visualize queue size statistics
@@ -373,7 +400,8 @@ def run_async_inference(robot_config, checkpoint_path, args, logger):
         
     except KeyboardInterrupt:
         logger.info("Stopping robot client...")
-        client.stop()
+        if client.running:
+            client.stop()
         action_receiver_thread.join(timeout=5.0)
         
         # Optionally visualize queue size statistics
@@ -385,7 +413,8 @@ def run_async_inference(robot_config, checkpoint_path, args, logger):
         
     except Exception as e:
         logger.error(f"Robot client error: {e}")
-        client.stop()
+        if client.running:
+            client.stop()
         return 1
     
     return 0
@@ -456,7 +485,7 @@ def add_resize_processor_if_needed(preprocessor, policy_config, robot_config, lo
         logger.info(f"Added resize processor at beginning of pipeline with size {resize_size}")
 
 
-def run_sync_inference(robot_config, checkpoint_path, args, logger):
+def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=None):
     """Run with synchronous inference (policy runs locally)
     
     Based on examples/tutorial/diffusion/diffusion_using_example.py
@@ -466,6 +495,7 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger):
         checkpoint_path: Path to policy checkpoint
         args: Command line arguments
         logger: Logger instance to use
+        stop_event: Optional threading.Event to signal early termination
     """
     import time
     import torch
@@ -520,6 +550,10 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger):
         dt = 1.0 / args.fps
         step = 0
         while args.max_rollout_steps is None or step < args.max_rollout_steps:
+            if stop_event and stop_event.is_set():
+                logger.info("Stop signal received, ending rollout...")
+                break
+            
             start_time = time.perf_counter()
             
             obs = robot.get_observation()
@@ -550,6 +584,129 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger):
         robot.disconnect()
         logger.info("Robot disconnected successfully.")
     
+    return 0
+
+
+def run_interactive_server(robot_config, args, logger):
+    """Run as ROS2 subscriber for interactive rollout control."""
+    import json
+    import threading
+    from argparse import Namespace
+    from pathlib import Path
+    
+    import rclpy
+    import time
+    import yaml
+    from rclpy.node import Node
+    from std_msgs.msg import String, Empty
+    from sensor_msgs.msg import Joy
+    
+    class RolloutSubscriber(Node):
+        def __init__(self):
+            super().__init__('rollout_subscriber')
+            self.create_subscription(String, '/rollout_command', self.on_command, 10)
+            self.create_subscription(Joy, '/spacenav/joy', self.joy_callback, 10)
+            self.reset_pub = self.create_publisher(Empty, '/franka_reset', 10)
+            logger.info("Listening for rollout commands on '/rollout_command'...")
+            
+            # Load model configurations from external config file
+            config_file = Path(__file__).parent / "rollout_model_configs.yaml"
+            with open(config_file) as f:
+                self.model_id_to_config = yaml.safe_load(f)
+            logger.info(f"Loaded {len(self.model_id_to_config)} rollout model configs from {config_file}")
+            
+            self.running = False
+            self.awaiting_result = False
+            self.result_file = None
+            self.button_pressed = None
+            self.stop_event = threading.Event()
+        
+        def joy_callback(self, msg):
+            if len(msg.buttons) < 27:
+                return
+            
+            # spacemouse right square button stops inference early (if running)
+            if msg.buttons[8] and self.running and not self.awaiting_result:
+                self.stop_event.set()
+            
+            # spacemouse button 1 / 2 for success/failure feedback
+            if self.awaiting_result:
+                if msg.buttons[12]:
+                    self.button_pressed = True
+                elif msg.buttons[13]:
+                    self.button_pressed = False
+    
+        def on_command(self, msg):
+            if self.running:
+                logger.warning("Rollout already in progress, ignoring command")
+                return
+            
+            self.running = True
+            data = json.loads(msg.data)
+            
+            model_id = data.get("model_id")
+            model_config = self.model_id_to_config.get(model_id)
+            checkpoint_path = model_config.get("checkpoint_path")
+            task = data.get("description") or args.task
+            max_steps = args.max_rollout_steps or 0
+            
+            if not checkpoint_path or not task:
+                logger.error("Missing checkpoint_path or task")
+                self.running = False
+                return
+            
+            logger.info(f"Rollout: model_id={model_id}, checkpoint={checkpoint_path}, task='{task}', max_steps={max_steps or 'unlimited'}")
+            
+            rollout_args = Namespace(**vars(args))
+            rollout_args.policy_type = model_id
+            rollout_args.checkpoint_path = checkpoint_path
+            rollout_args.task = task
+            rollout_args.max_rollout_steps = max_steps if max_steps > 0 else None
+            
+            self.result_file = Path(f'logs/results/{data.get("metadata")}_{model_id}_result.log')
+            self.result_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            # Run inference in a separate thread so joy callbacks keep working
+            self.stop_event.clear()
+            inference_fn = run_sync_inference if model_config.get("mode") == "sync" else run_async_inference
+            inference_thread = threading.Thread(
+                target=self._run_inference,
+                args=(inference_fn, robot_config, checkpoint_path, rollout_args),
+                daemon=True
+            )
+            inference_thread.start()
+        
+        def _run_inference(self, inference_fn, robot_config, checkpoint_path, rollout_args):
+            try:
+                inference_fn(robot_config, Path(checkpoint_path), rollout_args, logger, self.stop_event)
+            except Exception as e:
+                logger.error(f"Inference error: {e}")
+            
+            # Wait for user feedback via spacenav button
+            logger.info("Press spacemouse button 1 for success, button 2 for failure...")
+            self.awaiting_result = True
+            self.button_pressed = None
+            while self.button_pressed is None:
+                time.sleep(0.1)
+            
+            result = "success" if self.button_pressed else "failure"
+            with open(self.result_file, "a") as f:
+                f.write(checkpoint_path + "\n")
+                f.write(result + "\n")
+            logger.info(f"Logged result: {result}")
+            self.reset_pub.publish(Empty())
+            logger.info("Robot reset command sent... Will wait for 3 secs")
+            time.sleep(3)
+            self.awaiting_result = False
+            self.running = False
+    
+    rclpy.init()
+    try:
+        rclpy.spin(RolloutSubscriber())
+    except KeyboardInterrupt:
+        logger.info("Shutting down...")
+    finally:
+        rclpy.shutdown()
     return 0
 
 
