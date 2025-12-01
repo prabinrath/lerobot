@@ -1,5 +1,9 @@
 # Model configurations for interactive rollout control
 
+vla:
+  checkpoint_path: outputs/train/smolvla_franka_fr3_softtoy/checkpoints/last/pretrained_model
+  mode: async
+
 smolvla:
   checkpoint_path: outputs/train/smolvla_franka_fr3_softtoy/checkpoints/last/pretrained_model
   mode: async

@@ -57,7 +57,11 @@ async def main():
                 else:
                     node.publish_rollout(data)
                     resp = {"status": "ok", "message": "Rollout command published"}
-            elif cmd in ("start", "stop"):
+            elif cmd == "start":
+                metadata = data.get("metadata", "")
+                node.publish_record(f"start:{metadata}")
+                resp = {"status": "ok", "message": f"Record start:{metadata} published"}
+            elif cmd == "stop":
                 node.publish_record(cmd)
                 resp = {"status": "ok", "message": f"Record {cmd} published"}
             else:

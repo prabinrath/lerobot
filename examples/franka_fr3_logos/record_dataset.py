@@ -53,6 +53,7 @@ import numpy as np
 from rclpy.node import Node
 from rclpy.executors import SingleThreadedExecutor
 from sensor_msgs.msg import Joy
+from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory
 
 from lerobot.cameras.configs import Cv2Rotation
@@ -62,7 +63,7 @@ from lerobot.robots.utils import make_robot_from_config
 
 
 class RecordingController(Node):
-    """ROS2 node to control recording via SpaceNav joystick."""
+    """ROS2 node to control recording via SpaceNav joystick or ROS2 commands."""
     
     def __init__(self):
         super().__init__('recording_controller')
@@ -81,9 +82,20 @@ class RecordingController(Node):
             10
         )
         
+        # Subscribe to record commands from interactive server
+        self.record_command_subscription = self.create_subscription(
+            String,
+            '/record_command',
+            self.record_command_callback,
+            10
+        )
+        
         # Recording state: 'waiting', 'recording', 'save', or 'reject'
         self.state = 'waiting'
         self.lock = Lock()
+        
+        # Metadata from start command
+        self.metadata = None
         
         # Commanded joint positions (protected by mutex)
         self.commanded_positions = None
@@ -95,9 +107,21 @@ class RecordingController(Node):
         self.BUTTON_R = 8   # Reject episode
         
         self.get_logger().info("Recording controller initialized")
-        self.get_logger().info("Press Button A to start recording")
-        self.get_logger().info("Press Button B to stop and save episode")
+        self.get_logger().info("Press Button A('3') to start recording")
+        self.get_logger().info("Press Button B('4') to stop and save episode")
         self.get_logger().info("Press Button R to reject episode (discard without saving)")
+        self.get_logger().info("Or use /record_command topic: 'start' / 'stop'")
+    
+    def record_command_callback(self, msg):
+        """Handle record commands from interactive server."""
+        with self.lock:
+            if msg.data.startswith("start:") and self.state == 'waiting':
+                self.metadata = msg.data[6:]  # Extract metadata after "start:"
+                self.state = 'recording'
+                self.get_logger().info(f"▶ STARTING RECORDING (via command) - metadata: {self.metadata}")
+            elif msg.data == "stop" and self.state == 'recording':
+                self.state = 'save'
+                self.get_logger().info("■ STOPPING RECORDING (via command) - Will save episode")
     
     def joy_callback(self, msg):
         """Handle joystick messages from SpaceNav."""
@@ -156,6 +180,11 @@ class RecordingController(Node):
         """Get the latest commanded positions (thread-safe)."""
         with self.command_lock:
             return self.commanded_positions.copy() if self.commanded_positions is not None else None
+    
+    def get_metadata(self):
+        """Get the metadata from the last start command."""
+        with self.lock:
+            return self.metadata
 
 
 def record_episode(robot, episode_idx, fps, controller, image_size=None):
@@ -379,7 +408,7 @@ def main():
     logger.info("="*70)
     logger.info("Franka FR3 Data Recording")
     logger.info("="*70)
-    logger.info(f"Output: {args.output_path}")
+    logger.info(f"Output: {args.output_path} [can be overridden by record metadata]")
     logger.info(f"Episodes: {args.num_episodes}")
     logger.info(f"FPS: {args.fps}")
     logger.info(f"Image size: {args.image_size[0]}x{args.image_size[1]}")
@@ -403,58 +432,17 @@ def main():
     logger.info("ROS2 node spinning in separate thread")
     
     try:
-        # Determine starting episode index
         start_episode = 0
-        if args.resume:
-            if not output_path.exists():
-                logger.info(f"Dataset file not found: {output_path}")
-                return 1
-            logger.info(f"Resuming from existing file: {output_path}")
-            with h5py.File(output_path, 'r') as f:
-                if 'data' in f:
-                    existing_demos = [k for k in f['data'].keys() if k.startswith('demo_')]
-                    if existing_demos:
-                        # Extract episode numbers and find the max
-                        demo_nums = [int(k.split('_')[1]) for k in existing_demos]
-                        start_episode = max(demo_nums) + 1
-                        logger.info(f"Found {len(existing_demos)} existing episode(s) in file. Will record starting from episode {start_episode + 1}")
-        
-        # Create or open H5 file
-        if not args.resume:
-            # Safety check: prevent accidental overwriting
-            if output_path.exists():
-                logger.error(f"Dataset file already exists: {output_path}")
-                logger.error("Use --resume flag to continue recording, or delete/rename the existing file.")
-                return 1
-            
-            logger.info(f"Creating new H5 file: {output_path}")
-            with h5py.File(output_path, 'w') as f:
-                f.create_group('data')
-                # Save metadata
-                f.attrs['fps'] = args.fps
-                f.attrs['image_height'] = args.image_size[0]
-                f.attrs['image_width'] = args.image_size[1]
-        else:
-            # For resume mode, verify metadata matches
-            with h5py.File(output_path, 'r') as f:
-                if 'fps' in f.attrs:
-                    existing_fps = f.attrs['fps']
-                    if existing_fps != args.fps:
-                        logger.error(f"Existing FPS ({existing_fps}) differs from specified FPS ({args.fps})")
-                        logger.error("Cannot resume with different FPS. Use the same FPS as the existing file.")
-                        return 1
-                if 'image_height' in f.attrs and 'image_width' in f.attrs:
-                    existing_height = f.attrs['image_height']
-                    existing_width = f.attrs['image_width']
-                    if existing_height != args.image_size[0] or existing_width != args.image_size[1]:
-                        logger.error(
-                            f"Existing image size ({existing_height}x{existing_width}) "
-                            f"differs from specified size ({args.image_size[0]}x{args.image_size[1]})"
-                        )
-                        logger.error("Cannot resume with different image size. Use the same image size as the existing file.")
-                        return 1
-        
         current_episode = start_episode
+        resumed_files = set()  # Track files we've already resumed from
+        
+        # Check if output file exists and resume flag is not set (only for spacemouse recording)
+        # NOTE: When recording via ROS2 command with metadata, resume is automatic and doesn't need the flag
+        output_path = Path(args.output_path)
+        if output_path.exists() and not args.resume:
+            logger.error(f"Dataset file already exists: {output_path}")
+            logger.error("Use --resume flag to continue recording, or delete/rename the existing file.")
+            return 1
         
         while (current_episode - start_episode) < args.num_episodes:
             try:
@@ -468,7 +456,55 @@ def main():
                 )
                 
                 if episode_data is not None:
-                    # Close and reopen file in append mode for each save
+                    # Get metadata from controller and use as h5 filename
+                    metadata = controller.get_metadata()
+                    if metadata:
+                        output_path = Path(args.output_path).parent / f"{metadata}.h5"
+                    else:
+                        output_path = Path(args.output_path)
+                    
+                    # Create file if it doesn't exist, otherwise resume from existing
+                    if not output_path.exists():
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        with h5py.File(output_path, 'w') as f:
+                            f.create_group('data')
+                            f.attrs['fps'] = args.fps
+                            f.attrs['image_height'] = args.image_size[0]
+                            f.attrs['image_width'] = args.image_size[1]
+                        logger.info(f"Created new H5 file: {output_path}")
+                        resumed_files.add(str(output_path))
+                    elif str(output_path) not in resumed_files:
+                        # Resume from existing file - validate and get next episode index (only once per file)
+                        logger.info(f"Resuming from existing file: {output_path}")
+                        logger.info("If you don't want to resume, provide a new file name / metadata or delete the existing H5 file.")
+                        with h5py.File(output_path, 'r') as f:
+                            # Verify metadata matches
+                            if 'fps' in f.attrs and f.attrs['fps'] != args.fps:
+                                logger.error(f"Existing FPS ({f.attrs['fps']}) differs from specified FPS ({args.fps})")
+                                logger.error("Cannot resume with different FPS. Use the same FPS as the existing file.")
+                                return 1
+                            if 'image_height' in f.attrs and 'image_width' in f.attrs:
+                                existing_height = f.attrs['image_height']
+                                existing_width = f.attrs['image_width']
+                                if existing_height != args.image_size[0] or existing_width != args.image_size[1]:
+                                    logger.error(
+                                        f"Existing image size ({existing_height}x{existing_width}) "
+                                        f"differs from specified size ({args.image_size[0]}x{args.image_size[1]})"
+                                    )
+                                    logger.error("Cannot resume with different image size. Use the same image size as the existing file.")
+                                    return 1
+                            # Get next episode index
+                            if 'data' in f:
+                                existing_demos = [k for k in f['data'].keys() if k.startswith('demo_')]
+                                if existing_demos:
+                                    demo_nums = [int(k.split('_')[1]) for k in existing_demos]
+                                    current_episode = max(demo_nums) + 1
+                                    if start_episode == 0:
+                                        start_episode = current_episode
+                                    logger.info(f"Found {len(existing_demos)} existing episode(s). Will record starting from episode {current_episode + 1}")
+                        resumed_files.add(str(output_path))
+                    
+                    # Save episode
                     with h5py.File(output_path, 'a') as h5_file:
                         save_episode_to_h5(h5_file, episode_data, current_episode)
                     
@@ -477,11 +513,11 @@ def main():
                     
                     if (current_episode - start_episode) < args.num_episodes:
                         print(f"\nReset the environment for next episode.")
-                        print(f"Press Button A when ready to record episode {current_episode + 1}")
+                        print(f"Press Button A('3') when ready to record episode {current_episode + 1}")
                         print("Or press Ctrl+C to finish recording.\n")
                 else:
                     logger.info("Episode rejected - not saved to file")
-                    print(f"\nPress Button A to start a fresh recording of episode {current_episode + 1}")
+                    print(f"\nPress Button A('3') to start a fresh recording of episode {current_episode + 1}")
                     print("Or press Ctrl+C to finish recording.\n")
                     
             except KeyboardInterrupt:
