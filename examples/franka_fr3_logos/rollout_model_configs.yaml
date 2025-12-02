@@ -19,3 +19,7 @@ groot:
 diffusion:
   checkpoint_path: outputs/train/diffusion_franka_fr3_softtoy_ee/checkpoints/last/pretrained_model
   mode: sync
+
+replay:
+  checkpoint_path: datasets/lion_in_basket.h5
+  mode: replay

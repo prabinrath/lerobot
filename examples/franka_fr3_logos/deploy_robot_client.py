@@ -600,6 +600,10 @@ def run_interactive_server(robot_config, args, logger):
     from rclpy.node import Node
     from std_msgs.msg import String, Empty
     from sensor_msgs.msg import Joy
+
+    import sys
+    sys.path.insert(0, str(Path(__file__).parent))
+    from replay_h5 import replay_h5_on_robot
     
     class RolloutSubscriber(Node):
         def __init__(self):
@@ -646,6 +650,8 @@ def run_interactive_server(robot_config, args, logger):
             
             model_id = data.get("model_id")
             model_config = self.model_id_to_config.get(model_id)
+            mode = model_config.get("mode") if model_config else None
+            
             checkpoint_path = model_config.get("checkpoint_path")
             task = data.get("description") or args.task
             max_steps = args.max_rollout_steps or 0
@@ -668,19 +674,22 @@ def run_interactive_server(robot_config, args, logger):
             
             # Run inference in a separate thread so joy callbacks keep working
             self.stop_event.clear()
-            inference_fn = run_sync_inference if model_config.get("mode") == "sync" else run_async_inference
+            inference_fn = run_sync_inference if mode == "sync" else run_async_inference
             inference_thread = threading.Thread(
                 target=self._run_inference,
-                args=(inference_fn, robot_config, checkpoint_path, rollout_args),
+                args=(inference_fn, robot_config, checkpoint_path, rollout_args, mode == "replay"),
                 daemon=True
             )
             inference_thread.start()
         
-        def _run_inference(self, inference_fn, robot_config, checkpoint_path, rollout_args):
+        def _run_inference(self, inference_fn, robot_config, checkpoint_path, rollout_args, is_replay=False):
             try:
-                inference_fn(robot_config, Path(checkpoint_path), rollout_args, logger, self.stop_event)
+                if is_replay:
+                    replay_h5_on_robot(h5_path=checkpoint_path, robot_id=args.robot_id, logger=logger)
+                else:
+                    inference_fn(robot_config, Path(checkpoint_path), rollout_args, logger, self.stop_event)
             except Exception as e:
-                logger.error(f"Inference error: {e}")
+                logger.error(f"{'Replay' if is_replay else 'Inference'} error: {e}")
             
             # Wait for user feedback via spacenav button
             logger.info("Press spacemouse button 1 for success, button 2 for failure...")

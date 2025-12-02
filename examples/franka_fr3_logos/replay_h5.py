@@ -21,12 +21,13 @@
 Replay H5 demonstrations on Franka FR3 robot.
 
 This script reads joint states from an H5 file and replays them on the robot
-at the specified FPS (frames per second).
+at the FPS stored in the H5 file (or optionally specified via command line).
 
 Usage:
-    python replay_h5.py --h5_path path/to/dataset.h5 --fps 10
+    python replay_h5.py --h5_path path/to/dataset.h5
     
     Optional arguments:
+    --fps 10        # Override FPS from H5 file
     --demo_index 0  # Replay a specific demo (default: 0)
 """
 
@@ -60,7 +61,7 @@ def extract_joint_positions_from_h5(joint_states):
 
 def replay_h5_on_robot(
     h5_path: str,
-    fps: int = 10,
+    fps: int | None = None,
     demo_index: int = 0,
     robot_id: str = "franka_fr3",
     logger: logging.Logger | None = None,
@@ -70,7 +71,7 @@ def replay_h5_on_robot(
     
     Args:
         h5_path: Path to the H5 dataset file
-        fps: Playback frames per second
+        fps: Playback frames per second (if None, read from H5 file)
         demo_index: Index of the demo to replay (0-indexed)
         robot_id: Unique identifier for the robot
         logger: Logger instance for logging messages
@@ -79,8 +80,6 @@ def replay_h5_on_robot(
         logger = logging.getLogger(__name__)
     
     logger.info(f"Replaying H5 demonstration from {h5_path}")
-    logger.info(f"FPS: {fps}")
-    logger.info(f"Demo index: {demo_index}")
     
     # Validate H5 file exists
     h5_file = Path(h5_path)
@@ -90,6 +89,16 @@ def replay_h5_on_robot(
     # Load demonstration from H5 file
     logger.info("Loading demonstration data...")
     with h5py.File(h5_path, 'r') as f:
+        # Read fps from H5 file if not provided
+        if fps is None:
+            if 'fps' in f.attrs:
+                fps = int(f.attrs['fps'])
+                logger.info(f"Using FPS from H5 file: {fps}")
+            else:
+                raise ValueError("FPS not provided and not found in H5 file attributes")
+        else:
+            logger.info(f"Using provided FPS: {fps} (ignoring H5 file FPS)")
+        
         data_group = f['data']
         demo_keys = [key for key in data_group.keys() if key.startswith('demo_')]
         demo_keys.sort(key=lambda x: int(x.split('_')[1]))
@@ -178,8 +187,8 @@ def main():
     parser.add_argument(
         "--fps",
         type=int,
-        default=10,
-        help="Playback frames per second"
+        default=None,
+        help="Playback frames per second (default: read from H5 file)"
     )
     parser.add_argument(
         "--demo_index",
