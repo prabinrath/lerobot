@@ -650,8 +650,8 @@ def run_interactive_server(robot_config, args, logger):
             
             model_id = data.get("model_id")
             model_config = self.model_id_to_config.get(model_id)
+            policy_type = model_config.get("policy_type")
             mode = model_config.get("mode") if model_config else None
-            
             checkpoint_path = model_config.get("checkpoint_path")
             task = data.get("description") or args.task
             max_steps = args.max_rollout_steps or 0
@@ -664,7 +664,7 @@ def run_interactive_server(robot_config, args, logger):
             logger.info(f"Rollout: model_id={model_id}, checkpoint={checkpoint_path}, task='{task}', max_steps={max_steps or 'unlimited'}")
             
             rollout_args = Namespace(**vars(args))
-            rollout_args.policy_type = model_id
+            rollout_args.policy_type = policy_type
             rollout_args.checkpoint_path = checkpoint_path
             rollout_args.task = task
             rollout_args.max_rollout_steps = max_steps if max_steps > 0 else None

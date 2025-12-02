@@ -1,24 +1,9 @@
 # Model configurations for interactive rollout control
 
 vla:
-  checkpoint_path: outputs/train/smolvla_franka_fr3_softtoy/checkpoints/last/pretrained_model
+  policy_type: smolvla
+  checkpoint_path: outputs/train/smolvla_franka_fr3_lion_in_basket_5shot/checkpoints/010000/pretrained_model
   mode: async
-
-smolvla:
-  checkpoint_path: outputs/train/smolvla_franka_fr3_softtoy/checkpoints/last/pretrained_model
-  mode: async
-
-pi05:
-  checkpoint_path: outputs/train/pi05_franka_fr3_softtoy/checkpoints/last/pretrained_model
-  mode: async
-
-groot:
-  checkpoint_path: outputs/train/groot_franka_fr3_softtoy/checkpoints/010000/pretrained_model
-  mode: sync
-
-diffusion:
-  checkpoint_path: outputs/train/diffusion_franka_fr3_softtoy_ee/checkpoints/last/pretrained_model
-  mode: sync
 
 replay:
   checkpoint_path: datasets/lion_in_basket.h5
