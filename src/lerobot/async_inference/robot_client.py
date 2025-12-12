@@ -169,6 +169,25 @@ class RobotClient:
             self.logger.error(f"Failed to connect to policy server: {e}")
             return False
 
+    def reset(self):
+        """Reset the policy server and client state without reloading the checkpoint"""
+        # Reset server-side state
+        self.stub.Ready(services_pb2.Empty())
+        
+        # Reset client-side state
+        self.shutdown_event.clear()
+        with self.action_queue_lock:
+            self.action_queue = Queue()
+        self.action_queue_size = []
+        with self.latest_action_lock:
+            self.latest_action = -1
+        self.action_chunk_size = -1
+        self.start_barrier = threading.Barrier(2)
+        self.must_go.set()
+        
+        # Reset FPS tracker for fresh metrics
+        self.fps_tracker = FPSTracker(target_fps=self.config.fps)
+
     def stop(self):
         """Stop the robot client"""
         self.shutdown_event.set()

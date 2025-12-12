@@ -107,6 +107,15 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         with self._predicted_timesteps_lock:
             self._predicted_timesteps = set()
 
+        # Reset last processed observation to allow fresh inference on new task
+        self.last_processed_obs = None
+
+        # Reset FPS tracker for fresh metrics
+        self.fps_tracker = FPSTracker(target_fps=self.config.fps)
+
+        if self.policy is not None:
+            self.policy.reset()
+
     def Ready(self, request, context):  # noqa: N802
         client_id = context.peer()
         self.logger.info(f"Client {client_id} connected and ready")

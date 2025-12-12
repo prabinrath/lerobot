@@ -314,13 +314,18 @@ def main():
     # Choose inference mode
     if args.use_sync_inference:
         logger.info("Using SYNCHRONOUS INFERENCE mode (policy runs locally)")
-        return run_sync_inference(robot_config, checkpoint_path, args, logger)
+        ret_code, sync_state = run_sync_inference(robot_config, checkpoint_path, args, logger)
+        # Disconnect robot in non-interactive mode
+        if sync_state and sync_state.get('robot'):
+            sync_state['robot'].disconnect()
+            logger.info("Robot disconnected successfully.")
+        return ret_code
     else:
         logger.info("Using ASYNC INFERENCE mode (policy runs on server)")
-        return run_async_inference(robot_config, checkpoint_path, args, logger)
+        return run_async_inference(robot_config, checkpoint_path, args, logger)[0]
 
 
-def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=None):
+def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=None, client=None):
     """Run with async inference (policy server)
        Note: Policies with n_obs_steps > 1 are not yet supported for Async inference
              as the policy server does not manage the observation queue properly. affected
@@ -332,40 +337,49 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
         args: Command line arguments
         logger: Logger instance to use
         stop_event: Optional threading.Event to signal early termination
+        client: Optional pre-created RobotClient (for caching in interactive mode)
+    
+    Returns:
+        Tuple of (return_code, client) for caching
     """
     import threading
     import time
-    from lerobot.async_inference.configs import RobotClientConfig
     from lerobot.async_inference.helpers import visualize_action_queue_size
-    from lerobot.async_inference.robot_client import RobotClient
     
-    # Create client configuration
-    client_config = RobotClientConfig(
-        robot=robot_config,
-        server_address=args.server_address,
-        policy_type=args.policy_type,
-        pretrained_name_or_path=str(checkpoint_path),
-        policy_device=args.policy_device,
-        task=args.task,
-        actions_per_chunk=args.actions_per_chunk,
-        chunk_size_threshold=args.chunk_size_threshold,
-        fps=args.fps,
-        aggregate_fn_name=args.aggregate_fn_name,
-        debug_visualize_queue_size=args.debug_visualize_queue_size,
-        max_rollout_steps=args.max_rollout_steps,
-    )
-    
-    # Create and start robot client
-    client = RobotClient(client_config)
+    # Create client if not provided (non-interactive mode)
+    owns_client = client is None
+    if client is None:
+        from lerobot.async_inference.configs import RobotClientConfig
+        from lerobot.async_inference.robot_client import RobotClient
+        
+        client_config = RobotClientConfig(
+            robot=robot_config,
+            server_address=args.server_address,
+            policy_type=args.policy_type,
+            pretrained_name_or_path=str(checkpoint_path),
+            policy_device=args.policy_device,
+            task=args.task,
+            actions_per_chunk=args.actions_per_chunk,
+            chunk_size_threshold=args.chunk_size_threshold,
+            fps=args.fps,
+            aggregate_fn_name=args.aggregate_fn_name,
+            debug_visualize_queue_size=args.debug_visualize_queue_size,
+            max_rollout_steps=args.max_rollout_steps,
+        )
+        client = RobotClient(client_config)
     
     try:
-        logger.info("Connecting to policy server and robot...")
-        if not client.start():
-            logger.error("Failed to start robot client")
-            return 1
+        # Start client if we created it (owns_client) or if it's not running
+        if owns_client:
+            logger.info("Connecting to policy server and robot...")
+            if not client.start():
+                logger.error("Failed to start robot client")
+                return 1, client
+            logger.info("Successfully connected!")
+        else:
+            logger.info("Reusing existing connection to policy server and robot...")
         
-        logger.info("Successfully connected! Starting control loop...")
-        logger.info("Press Ctrl+C to stop execution.")
+        logger.info("Starting control loop... Press Ctrl+C to stop execution.")
         
         # Start action receiver thread
         action_receiver_thread = threading.Thread(target=client.receive_actions, daemon=True)
@@ -387,8 +401,13 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
         
         # Normal completion (e.g., max_rollout_steps reached)
         logger.info("Control loop completed.")
-        if client.running:
+        # Only stop client if we own it AND not in interactive mode (stop_event indicates interactive mode)
+        if owns_client and client.running and stop_event is None:
             client.stop()
+        else:
+            # For reused clients, stop the threads but keep connection alive
+            # This ensures the action_receiver_thread exits cleanly before we start a new one
+            client.shutdown_event.set()
         action_receiver_thread.join(timeout=5.0)
         
         # Optionally visualize queue size statistics
@@ -396,11 +415,12 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
             logger.info("Displaying action queue size visualization...")
             visualize_action_queue_size(client.action_queue_size)
         
-        logger.info("Robot client stopped successfully.")
+        if owns_client and stop_event is None:
+            logger.info("Robot client stopped successfully.")
         
     except KeyboardInterrupt:
         logger.info("Stopping robot client...")
-        if client.running:
+        if client.running and stop_event is None:
             client.stop()
         action_receiver_thread.join(timeout=5.0)
         
@@ -409,15 +429,16 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
             logger.info("Displaying action queue size visualization...")
             visualize_action_queue_size(client.action_queue_size)
         
-        logger.info("Robot client stopped successfully.")
+        if stop_event is None:
+            logger.info("Robot client stopped successfully.")
         
     except Exception as e:
         logger.error(f"Robot client error: {e}")
-        if client.running:
+        if client.running and stop_event is None:
             client.stop()
-        return 1
+        return 1, client
     
-    return 0
+    return 0, client
 
 
 def add_resize_processor_if_needed(preprocessor, policy_config, robot_config, logger):
@@ -485,7 +506,7 @@ def add_resize_processor_if_needed(preprocessor, policy_config, robot_config, lo
         logger.info(f"Added resize processor at beginning of pipeline with size {resize_size}")
 
 
-def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=None):
+def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=None, sync_state=None):
     """Run with synchronous inference (policy runs locally)
     
     Based on examples/tutorial/diffusion/diffusion_using_example.py
@@ -496,6 +517,10 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
         args: Command line arguments
         logger: Logger instance to use
         stop_event: Optional threading.Event to signal early termination
+        sync_state: Optional dict with cached state {'policy', 'preprocess', 'postprocess', 'robot', 'dataset_features'}
+    
+    Returns:
+        Tuple of (return_code, sync_state) for caching
     """
     import time
     import torch
@@ -507,44 +532,58 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
     
     device = torch.device(args.policy_device)
     
-    # Load policy
-    logger.info(f"Loading {args.policy_type} policy from {checkpoint_path}...")
-    policy = get_policy_class(args.policy_type).from_pretrained(str(checkpoint_path))
+    # Use cached state or create new
+    if sync_state is None:
+        sync_state = {}
     
-    if args.policy_type in ["pi05", "pi0"]:
-        if hasattr(policy, 'model') and hasattr(policy.model, 'sample_actions'):
-            # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
-            # If sample_actions was compiled, replace it with the original uncompiled version
-            # torch.compile wraps methods, we need to get the original
-            if hasattr(policy.model.sample_actions, '__wrapped__'):
-                policy.model.sample_actions = policy.model.sample_actions.__wrapped__
-            logger.info("Disabled torch.compile for inference")
+    policy = sync_state.get('policy')
+    preprocess = sync_state.get('preprocess')
+    postprocess = sync_state.get('postprocess')
+    robot = sync_state.get('robot')
+    dataset_features = sync_state.get('dataset_features')
     
-    policy.to(device)
-    policy.eval()
+    # Load policy if not provided
+    if policy is None:
+        logger.info(f"Loading {args.policy_type} policy from {checkpoint_path}...")
+        policy = get_policy_class(args.policy_type).from_pretrained(str(checkpoint_path))
+        
+        if args.policy_type in ["pi05", "pi0"]:
+            if hasattr(policy, 'model') and hasattr(policy.model, 'sample_actions'):
+                # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
+                # If sample_actions was compiled, replace it with the original uncompiled version
+                # torch.compile wraps methods, we need to get the original
+                if hasattr(policy.model.sample_actions, '__wrapped__'):
+                    policy.model.sample_actions = policy.model.sample_actions.__wrapped__
+                logger.info("Disabled torch.compile for inference")
+        
+        policy.to(device)
+        policy.eval()
+        
+        # Load preprocessor and postprocessor, overriding device to match requested device
+        device_override = {"device": device}
+        preprocess, postprocess = make_pre_post_processors(
+            policy.config,
+            pretrained_path=str(checkpoint_path),
+            preprocessor_overrides={
+                "device_processor": device_override,
+            },
+            postprocessor_overrides={"device_processor": device_override},
+        )
+        
+        # Check if camera resolutions match policy expectations and add resize processor if needed
+        add_resize_processor_if_needed(preprocess, policy.config, robot_config, logger)
     
-    # Load preprocessor and postprocessor, overriding device to match requested device
-    device_override = {"device": device}
-    preprocess, postprocess = make_pre_post_processors(
-        policy.config,
-        pretrained_path=str(checkpoint_path),
-        preprocessor_overrides={
-            "device_processor": device_override,
-        },
-        postprocessor_overrides={"device_processor": device_override},
-    )
+    # Initialize robot if not provided
+    if robot is None:
+        logger.info("Connecting to robot...")
+        robot = make_robot_from_config(robot_config)
+        robot.connect()
+        logger.info("Robot connected!")
+        action_features = hw_to_dataset_features(robot.action_features, ACTION)
+        obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR)
+        dataset_features = {**action_features, **obs_features}
     
-    # Check if camera resolutions match policy expectations and add resize processor if needed
-    add_resize_processor_if_needed(preprocess, policy.config, robot_config, logger)
-    
-    # Initialize robot
-    logger.info("Connecting to robot...")
-    robot = make_robot_from_config(robot_config)
-    robot.connect()
-    logger.info("Robot connected! Starting control loop (Ctrl+C to stop)...")
-    action_features = hw_to_dataset_features(robot.action_features, ACTION)
-    obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR)
-    dataset_features = {**action_features, **obs_features}
+    logger.info("Starting control loop (Ctrl+C to stop)...")
 
     try:
         dt = 1.0 / args.fps
@@ -580,11 +619,17 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
         
     except KeyboardInterrupt:
         logger.info("Stopping robot...")
-    finally:
-        robot.disconnect()
-        logger.info("Robot disconnected successfully.")
     
-    return 0
+    # Build sync_state for caching (don't disconnect robot if caching)
+    sync_state = {
+        'policy': policy,
+        'preprocess': preprocess,
+        'postprocess': postprocess,
+        'robot': robot,
+        'dataset_features': dataset_features,
+    }
+    
+    return 0, sync_state
 
 
 def run_interactive_server(robot_config, args, logger):
@@ -624,6 +669,13 @@ def run_interactive_server(robot_config, args, logger):
             self.result_file = None
             self.button_pressed = None
             self.stop_event = threading.Event()
+            
+            # Sync mode cache
+            self.cached_sync_checkpoint_path = None
+            self.cached_sync_state = None
+            # Async mode cache
+            self.cached_async_checkpoint_path = None
+            self.cached_async_client = None
         
         def joy_callback(self, msg):
             if len(msg.buttons) < 27:
@@ -683,11 +735,42 @@ def run_interactive_server(robot_config, args, logger):
             inference_thread.start()
         
         def _run_inference(self, inference_fn, robot_config, checkpoint_path, rollout_args, is_replay=False):
+            # NOTE: Currently, mixing multiple policies in a single interactive session is not supported.
+            # The cache is separate for each mode, but switching between policies may cause issues with robot/server state.
+            # This feature will be implemented in a future update.
             try:
                 if is_replay:
                     replay_h5_on_robot(h5_path=checkpoint_path, robot_id=args.robot_id, logger=logger)
+                elif inference_fn == run_sync_inference:
+                    # For sync mode, check cache and pass to inference function
+                    sync_state = None
+                    if self.cached_sync_checkpoint_path == checkpoint_path and self.cached_sync_state is not None:
+                        logger.info(f"Reusing cached sync state from {checkpoint_path}")
+                        self.cached_sync_state['policy'].reset()  # Reset internal state for new rollout
+                        sync_state = self.cached_sync_state
+                    
+                    _, sync_state = inference_fn(
+                        robot_config, Path(checkpoint_path), rollout_args, logger, self.stop_event,
+                        sync_state=sync_state)
+                    
+                    # Update cache
+                    self.cached_sync_checkpoint_path = checkpoint_path
+                    self.cached_sync_state = sync_state
                 else:
-                    inference_fn(robot_config, Path(checkpoint_path), rollout_args, logger, self.stop_event)
+                    # For async mode, check cache and pass to inference function
+                    client = None
+                    if self.cached_async_checkpoint_path == checkpoint_path and self.cached_async_client is not None:
+                        logger.info(f"Reusing cached async client for {checkpoint_path}")
+                        client = self.cached_async_client
+                        client.reset()
+                    
+                    _, client = run_async_inference(
+                        robot_config, Path(checkpoint_path), rollout_args, logger, self.stop_event,
+                        client=client)
+                    
+                    # Update cache
+                    self.cached_async_checkpoint_path = checkpoint_path
+                    self.cached_async_client = client
             except Exception as e:
                 logger.error(f"{'Replay' if is_replay else 'Inference'} error: {e}")
             

@@ -1,10 +1,27 @@
 # Model configurations for interactive rollout control
+# NOTE: Currently, mixing multiple policies in a single interactive session is not supported.
+# The cache is separate for each mode, but switching between policies may cause issues with robot/server state.
+# This feature will be implemented in a future update.
 
 vla:
+  # policy_type: pi05
+  # # checkpoint_path: outputs/train/pi05_multi_task_1/checkpoints/005000/pretrained_model
+  # checkpoint_path: outputs/train/pi05_multi_task_in_basket_ds/checkpoints/last/pretrained_model
+  # mode: async
+
   policy_type: smolvla
-  checkpoint_path: outputs/train/smolvla_franka_fr3_lion_in_basket_5shot/checkpoints/010000/pretrained_model
+  # checkpoint_path: outputs/train/smolvla_multi_task_1/checkpoints/005000/pretrained_model
+  checkpoint_path: outputs/train/smolvla_multi_task_in_basket_ds/checkpoints/last/pretrained_model
   mode: async
 
+  # policy_type: groot
+  # checkpoint_path: outputs/train/groot_multi_task_1/checkpoints/last/pretrained_model
+  # mode: sync
+
+  # policy_type: xvla
+  # checkpoint_path: outputs/train/xvla_multi_task_1/checkpoints/last/pretrained_model
+  # mode: sync
+  
 replay:
   checkpoint_path: datasets/lion_in_basket.h5
   mode: replay
