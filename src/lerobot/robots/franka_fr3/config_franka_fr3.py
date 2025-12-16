@@ -53,7 +53,9 @@ class FrankaFR3Config(RobotConfig):
     # numb_duration: Debounce duration to prevent rapid gripper toggling (seconds)
     numb_duration: float = 2.0
     # grasp_threshold: Tuple of (close_threshold, open_threshold) for gripper width hysteresis
-    grasp_threshold: tuple[float, float] = (0.039, 0.038)
+    # grasp_threshold: tuple[float, float] = (0.0395, 0.005) # ideal replay
+    grasp_threshold: tuple[float, float] = (0.039, 0.01) # tuned
+    # grasp_threshold: tuple[float, float] = (0.039, 0.038) # slacked
     
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.
     # Set this to a positive scalar to have the same value for all motors, or a dictionary that maps joint

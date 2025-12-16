@@ -389,8 +389,9 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
         def stop_monitor():
             while client.running:
                 if stop_event and stop_event.is_set():
-                    logger.info("Stop signal received, stopping client...")
-                    client.stop()
+                    logger.info("Stop signal received, ending rollout...")
+                    client.shutdown_event.set()
+                    break
                 time.sleep(0.1)
         
         if stop_event:

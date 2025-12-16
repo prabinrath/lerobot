@@ -5,13 +5,13 @@
 
 vla:
   # policy_type: pi05
-  # # checkpoint_path: outputs/train/pi05_multi_task_1/checkpoints/005000/pretrained_model
+  # # checkpoint_path: outputs/train/pi05_multi_task_1/checkpoints/last/pretrained_model
   # checkpoint_path: outputs/train/pi05_multi_task_in_basket_ds/checkpoints/last/pretrained_model
   # mode: async
 
   policy_type: smolvla
-  # checkpoint_path: outputs/train/smolvla_multi_task_1/checkpoints/005000/pretrained_model
-  checkpoint_path: outputs/train/smolvla_multi_task_in_basket_ds/checkpoints/last/pretrained_model
+  checkpoint_path: outputs/train/smolvla_multi_task_1/checkpoints/last/pretrained_model
+  #checkpoint_path: outputs/train/smolvla_multi_task_in_basket_ds/checkpoints/last/pretrained_model
   mode: async
 
   # policy_type: groot
