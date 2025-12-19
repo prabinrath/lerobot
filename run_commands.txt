@@ -1,15 +1,13 @@
 # Dataset Setup
 ---------------------------------------------
 python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
-    --h5_path /home/local/ASUAD/prath4/Downloads/raw_datasets/panda_from_clutter_to_basket.h5 \
-    --output_dir ./datasets/franka_fr3_panda_from_clutter_to_basket_ee \
-    --repo_id franka_fr3/panda_from_clutter_to_basket_ee \
+    --h5_path /home/local/ASUAD/prath4/Downloads/raw_datasets/vla_hri_h5/block_in_bowl.h5 \
+    --output_dir ./datasets/vla_hri_block_in_bowl_si \
+    --repo_id franka_fr3/vla_hri_block_in_bowl_si \
+    --task_name "Put the block in the bowl" \
     --down_sample_factor 3 \
-    --use_ee \
-    --urdf_path src/lerobot/robots/franka_fr3/franka_fr3_kinematics.urdf \
-    --ee_frame_name fr3_hand_tcp \
     --fps 30 \
-    --skip_demos 30
+    --skip_demos 27 36
 
 python3 examples/franka_fr3_logos/record_dataset.py \
     --robot_id franka_fr3 \

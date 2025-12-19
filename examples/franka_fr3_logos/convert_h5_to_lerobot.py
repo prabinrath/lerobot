@@ -168,7 +168,7 @@ def convert_h5_to_lerobot(
         ee_frame_name: Name of the end-effector frame in URDF (default: "fr3_hand_tcp")
         joint_names: List of joint names for FK (default: None, uses all joints)
         task_name: Default task name if language file is not found (default: None, uses h5 filename)
-        skip_demos: List of demo numbers (0-indexed) to skip during conversion (default: None, skips empty demos)
+        skip_demos: List of demo indices (0-indexed sequential position) to skip during conversion (default: None, skips empty demos)
         down_sample_factor: Factor by which to downsample the data (default: 1, no downsampling)
         logger: Logger instance for logging messages (default: None, creates a new logger)
     """
@@ -324,16 +324,13 @@ def convert_h5_to_lerobot(
             logger.info(f"Found {len(demo_keys)} demonstrations")
             
             for episode_idx, demo_key in enumerate(demo_keys):
-                # Extract demo number from demo_key (e.g., "demo_0" -> 0)
-                demo_num = int(demo_key.split('_')[1])
-                
                 logger.info(f"Processing episode {episode_idx}: {demo_key}")
                 
                 demo_data = data_group[demo_key]
                 
-                # Skip demonstrations if specified in skip_demos list
-                if skip_demos is not None and demo_num in skip_demos:
-                    logger.info(f"Skipping {demo_key} (demo {demo_num}): specified in skip_demos list")
+                # Skip demonstrations if specified in skip_demos list (using sequential episode_idx)
+                if skip_demos is not None and episode_idx in skip_demos:
+                    logger.info(f"Skipping {demo_key} (episode index {episode_idx}): specified in skip_demos list")
                     continue
                 
                 # Extract data
@@ -491,8 +488,8 @@ def main():
         type=int,
         nargs="*",
         default=None,
-        help="List of demo numbers (0-indexed) to skip during conversion. "
-             "Example: --skip_demos 0 2 5 will skip episodes 0, 2, and 5. "
+        help="List of demo indices (0-indexed sequential position in sorted list) to skip during conversion. "
+             "Example: --skip_demos 0 2 5 will skip the 1st, 3rd, and 6th demos in order. "
              "If not provided, empty demos will only be warned about but not skipped."
     )
     parser.add_argument(
