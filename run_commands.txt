@@ -91,6 +91,29 @@ lerobot-train \
 
 # use when finetuning on the different embodiments
 lerobot-train \
+  --dataset.root=datasets/vla_hri/vla_hri_block_in_bowl_si \
+  --dataset.repo_id=vla_hri_block_in_bowl_si \
+  --policy.type=smolvla \
+  --policy.pretrained_path=lerobot/smolvla_base \
+  --policy.chunk_size=50 \
+  --policy.n_action_steps=50 \
+  --policy.freeze_vision_encoder=false \
+  --policy.train_expert_only=false \
+  --policy.train_state_proj=true \
+  --policy.push_to_hub=false \
+  --output_dir=/mount/scratch3/prabin/outputs/train/smolvla_vla_hri_block_in_bowl_si \
+  --job_name=smolvla_vla_hri_block_in_bowl_si \
+  --steps=20000 \
+  --batch_size=8 \
+  --log_freq=250 \
+  --save_freq=5000 \
+  --eval_freq=0 \
+  --wandb.enable=true \
+  --wandb.disable_artifact=true \
+  --policy.empty_cameras=0 \
+  --policy.device=cuda
+
+lerobot-train \
   --dataset.root=datasets/multi_task_in_basket \
   --dataset.repo_id=multi_task_in_basket \
   --policy.type=smolvla \
@@ -114,16 +137,16 @@ lerobot-train \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/multi_task_in_basket \
-  --dataset.repo_id=multi_task_in_basket \
+  --dataset.root=datasets/multi_task_1 \
+  --dataset.repo_id=multi_task_1 \
   --policy.type=pi05 \
   --policy.pretrained_path=lerobot/pi05_base \
   --policy.compile_model=true \
   --policy.gradient_checkpointing=true \
   --policy.push_to_hub=false \
   --policy.dtype=bfloat16 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_multi_task_in_basket \
-  --job_name=pi05_multi_task_in_basket \
+  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_multi_task_1 \
+  --job_name=pi05_multi_task_1 \
   --steps=6000 \
   --batch_size=32 \
   --log_freq=250 \
@@ -133,15 +156,38 @@ lerobot-train \
   --wandb.disable_artifact=true \
   --policy.device=cuda
 
-# Multi-GPU training on GPUs 2-5
+lerobot-train \
+  --dataset.root=datasets/multi_task_1 \
+  --dataset.repo_id=multi_task_1 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/xvla_multi_task_1 \
+  --job_name=xvla_multi_task_1 \
+  --policy.path=lerobot/xvla-base \
+  --policy.push_to_hub=false \
+  --policy.dtype=bfloat16 \
+  --steps=3000 \
+  --batch_size=32 \
+  --log_freq=250 \
+  --save_freq=1000 \
+  --eval_freq=0 \
+  --policy.device=cuda \
+  --policy.freeze_vision_encoder=false \
+  --policy.freeze_language_encoder=false \
+  --policy.train_policy_transformer=true \
+  --policy.train_soft_prompts=true \
+  --policy.action_mode=auto \
+  --wandb.enable=true \
+  --wandb.disable_artifact=true \
+  --rename_map='{"observation.images.front_img": "observation.images.image", "observation.images.wrist_img": "observation.images.image2"}'
+
+# Multi-GPU training
 export CUDA_VISIBLE_DEVICES=2,3,4,5
 accelerate launch \
   --multi_gpu \
   --num_processes=4 \
   $(which lerobot-train) \
-  --dataset.root=datasets/multi_task_in_basket \
-  --dataset.repo_id=multi_task_in_basket \
-  --output_dir=/mount/scratch3/prabin/outputs/train/groot_multi_task_in_basket \
+  --dataset.root=datasets/multi_task_1 \
+  --dataset.repo_id=multi_task_1 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/groot_multi_task_1 \
   --save_checkpoint=true \
   --batch_size=8 \
   --steps=20000 \
@@ -149,11 +195,11 @@ accelerate launch \
   --log_freq=100 \
   --policy.push_to_hub=false \
   --policy.type=groot \
-  --policy.repo_id=groot_multi_task_in_basket \
+  --policy.repo_id=groot_multi_task_1 \
   --policy.tune_diffusion_model=false \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
-  --job_name=groot_multi_task_in_basket
+  --job_name=groot_multi_task_1
 
 # Deployment Setup
 ---------------------------------------------
