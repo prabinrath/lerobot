@@ -120,6 +120,17 @@ def visualize_dataset(
         rr.serve_web_viewer(open_browser=False, web_port=web_port)
 
     logger.info("Logging to Rerun")
+    
+    # Log task description once at the start
+    if len(dataset.meta.episodes) > 0:
+        try:
+            episode_data = dataset.meta.episodes[episode_index]
+            if "tasks" in episode_data and episode_data["tasks"]:
+                task_description = episode_data["tasks"][0]  # Get first task from list
+                rr.log("task_description", rr.TextDocument(task_description))
+        except (KeyError, IndexError) as e:
+            logger.warning(f"Could not load task description for episode {episode_index}: {e}")
+    
     for batch in tqdm.tqdm(dataloader, total=len(dataloader)):
         for i in range(len(batch["index"])):
             rr.set_time("frame_index", sequence=batch["frame_index"][i].item())
