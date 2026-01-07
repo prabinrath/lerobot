@@ -66,7 +66,7 @@ from typing import Optional
 import numpy as np
 import rclpy
 from builtin_interfaces.msg import Duration
-from franka_msgs.action import Grasp
+from franka_msgs.action import Grasp, Move
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
@@ -90,7 +90,7 @@ class FrankaInterface(Node):
         node_name: str = "franka_interface",
         joint_trajectory_topic: str = "/fr3_arm_controller/joint_trajectory",
         joint_state_topic: str = "/joint_states",
-        gripper_action_name: str = "/franka_gripper/grasp",
+        gripper_action_prefix: str = "/franka_gripper",
         alpha: float = 0.95,
         dt: float = 0.01,
         numb_duration: float = 2.0,
@@ -103,7 +103,7 @@ class FrankaInterface(Node):
             node_name: Name for the ROS2 node
             joint_trajectory_topic: Topic for publishing joint trajectories
             joint_state_topic: Topic for subscribing to joint states
-            gripper_action_name: Action server name for gripper control
+            gripper_action_prefix: Action server prefix for gripper control
             alpha: Filter coefficient for position smoothing (0-1)
             dt: Time step for trajectory execution
             numb_duration: Numb duration to prevent rapid gripper toggling (seconds)
@@ -145,10 +145,12 @@ class FrankaInterface(Node):
         )
         
         # Set up gripper action client
-        self.gripper_client = ActionClient(self, Grasp, gripper_action_name)
+        self.gripper_close_client = ActionClient(self, Grasp, f"{gripper_action_prefix}/grasp")
+        self.gripper_open_client = ActionClient(self, Move, f"{gripper_action_prefix}/move")
         
         logger.info("Waiting for gripper action server...")
-        self.gripper_client.wait_for_server()
+        self.gripper_close_client.wait_for_server()
+        self.gripper_open_client.wait_for_server()
         logger.info("Gripper action server connected")
         
         # Spin the node in a separate thread
@@ -262,20 +264,17 @@ class FrankaInterface(Node):
         grasp_goal.epsilon.outer = 0.08
         grasp_goal.speed = 0.1
         grasp_goal.force = 5.0
-        self.gripper_client.send_goal_async(grasp_goal)
+        self.gripper_close_client.send_goal_async(grasp_goal)
         logger.debug("Gripper grasp close command sent")
 
     def grasp_open(self) -> None:
         """
         Open the gripper using grasp action.
         """
-        grasp_goal = Grasp.Goal()
-        grasp_goal.width = 0.08
-        grasp_goal.epsilon.inner = 0.08
-        grasp_goal.epsilon.outer = 0.08
-        grasp_goal.speed = 0.1
-        grasp_goal.force = 5.0
-        self.gripper_client.send_goal_async(grasp_goal)
+        move_goal = Move.Goal()
+        move_goal.width = 0.08
+        move_goal.speed = 0.1
+        self.gripper_open_client.send_goal_async(move_goal)
         logger.debug("Gripper grasp open command sent")
 
     def send_gripper_position(self, gripper_position: float) -> None:
@@ -332,7 +331,7 @@ def initialize_franka_interface(
     node_name: str = "franka_interface",
     joint_trajectory_topic: str = "/fr3_arm_controller/joint_trajectory",
     joint_state_topic: str = "/joint_states",
-    gripper_action_name: str = "/franka_gripper/grasp",
+    gripper_action_prefix: str = "/franka_gripper",
     alpha: float = 0.95,
     dt: float = 0.1,
     numb_duration: float = 2.0,
@@ -346,7 +345,7 @@ def initialize_franka_interface(
         node_name: Name for the ROS2 node
         joint_trajectory_topic: Topic for publishing joint trajectories
         joint_state_topic: Topic for subscribing to joint states
-        gripper_action_name: Action server name for gripper control
+        gripper_action_prefix: Action server prefix for gripper control
         alpha: Filter coefficient for position smoothing (0-1)
         dt: Time step for trajectory execution
         numb_duration: Numb duration to prevent rapid gripper toggling (seconds)
@@ -363,7 +362,7 @@ def initialize_franka_interface(
         node_name=node_name,
         joint_trajectory_topic=joint_trajectory_topic,
         joint_state_topic=joint_state_topic,
-        gripper_action_name=gripper_action_name,
+        gripper_action_prefix=gripper_action_prefix,
         alpha=alpha,
         dt=dt,
         numb_duration=numb_duration,

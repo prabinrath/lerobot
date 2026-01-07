@@ -187,9 +187,19 @@ class RealSenseCamera(Camera):
                 1
             )  # NOTE(Steven): RS cameras need a bit of time to warm up before the first read. If we don't wait, the first read from the warmup will raise.
             start_time = time.time()
+            warmup_success = False
             while time.time() - start_time < self.warmup_s:
-                self.read()
+                try:
+                    self.read()
+                    warmup_success = True
+                except RuntimeError as e:
+                    warmup_success = False
+                    logger.warning(f"{self} warmup read failed: {e}, continuing...")
                 time.sleep(0.1)
+            
+            if not warmup_success:
+                logger.error(f"Failed to warmup camera {self.serial_number} after {self.warmup_s}s")
+                raise RuntimeError(f"Failed to warmup {self} - no successful reads during warmup period.")
 
         logger.info(f"{self} connected.")
 

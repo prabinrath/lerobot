@@ -43,7 +43,7 @@ class FrankaFR3Config(RobotConfig):
     # ROS2 topic and action names
     joint_trajectory_topic: str = "/fr3_arm_controller/joint_trajectory"
     joint_state_topic: str = "/joint_states"
-    gripper_action_name: str = "/franka_gripper/grasp"
+    gripper_action_prefix: str = "/franka_gripper"
     
     # FrankaInterface control parameters
     # alpha: Filter coefficient for position smoothing (0-1). Higher values = more aggressive tracking.
@@ -54,7 +54,8 @@ class FrankaFR3Config(RobotConfig):
     numb_duration: float = 2.0
     # grasp_threshold: Tuple of (close_threshold, open_threshold) for gripper width hysteresis
     # grasp_threshold: tuple[float, float] = (0.0395, 0.005) # ideal replay
-    grasp_threshold: tuple[float, float] = (0.039, 0.01) # tuned
+    # grasp_threshold: tuple[float, float] = (0.039, 0.01) # tuned
+    grasp_threshold: tuple[float, float] = (0.039, 0.02) # tuned
     # grasp_threshold: tuple[float, float] = (0.039, 0.038) # slacked
     
     # `max_relative_target` limits the magnitude of the relative positional target vector for safety purposes.

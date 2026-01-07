@@ -162,14 +162,14 @@ class PolicyServer(services_pb2_grpc.AsyncInferenceServicer):
         start = time.perf_counter()
         self.policy = policy_class.from_pretrained(policy_specs.pretrained_name_or_path)
         
-        if self.policy_type in ["pi05", "pi0"]:
-            if hasattr(self.policy, 'model') and hasattr(self.policy.model, 'sample_actions'):
-                # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
-                # If sample_actions was compiled, replace it with the original uncompiled version
-                # torch.compile wraps methods, we need to get the original
-                if hasattr(self.policy.model.sample_actions, '__wrapped__'):
-                    self.policy.model.sample_actions = self.policy.model.sample_actions.__wrapped__
-                self.logger.info("Disabled torch.compile for inference")
+        # if self.policy_type in ["pi05", "pi0"]:
+        #     if hasattr(self.policy, 'model') and hasattr(self.policy.model, 'sample_actions'):
+        #         # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
+        #         # If sample_actions was compiled, replace it with the original uncompiled version
+        #         # torch.compile wraps methods, we need to get the original
+        #         if hasattr(self.policy.model.sample_actions, '__wrapped__'):
+        #             self.policy.model.sample_actions = self.policy.model.sample_actions.__wrapped__
+        #         self.logger.info("Disabled torch.compile for inference")
         
         self.policy.to(self.device)
 

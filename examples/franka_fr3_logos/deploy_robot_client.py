@@ -548,14 +548,14 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
         logger.info(f"Loading {args.policy_type} policy from {checkpoint_path}...")
         policy = get_policy_class(args.policy_type).from_pretrained(str(checkpoint_path))
         
-        if args.policy_type in ["pi05", "pi0"]:
-            if hasattr(policy, 'model') and hasattr(policy.model, 'sample_actions'):
-                # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
-                # If sample_actions was compiled, replace it with the original uncompiled version
-                # torch.compile wraps methods, we need to get the original
-                if hasattr(policy.model.sample_actions, '__wrapped__'):
-                    policy.model.sample_actions = policy.model.sample_actions.__wrapped__
-                logger.info("Disabled torch.compile for inference")
+        # if args.policy_type in ["pi05", "pi0"]:
+        #     if hasattr(policy, 'model') and hasattr(policy.model, 'sample_actions'):
+        #         # Disable torch.compile for PI05/PI0 to avoid long compilation time during inference
+        #         # If sample_actions was compiled, replace it with the original uncompiled version
+        #         # torch.compile wraps methods, we need to get the original
+        #         if hasattr(policy.model.sample_actions, '__wrapped__'):
+        #             policy.model.sample_actions = policy.model.sample_actions.__wrapped__
+        #         logger.info("Disabled torch.compile for inference")
         
         policy.to(device)
         policy.eval()
@@ -785,7 +785,8 @@ def run_interactive_server(robot_config, args, logger):
             result = "success" if self.button_pressed else "failure"
             with open(self.result_file, "a") as f:
                 f.write(checkpoint_path + "\n")
-                f.write(result + "\n")
+                f.write(rollout_args.task + "\n")
+                f.write(result + "\n\n")
             logger.info(f"Logged result: {result}")
             self.reset_pub.publish(Empty())
             logger.info("Robot reset command sent... Will wait for 3 secs")

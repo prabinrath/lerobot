@@ -142,7 +142,7 @@ class FrankaFR3(Robot):
                 node_name=f"franka_fr3_{id(self)}",
                 joint_trajectory_topic=self.config.joint_trajectory_topic,
                 joint_state_topic=self.config.joint_state_topic,
-                gripper_action_name=self.config.gripper_action_name,
+                gripper_action_prefix=self.config.gripper_action_prefix,
                 alpha=self.config.alpha,
                 dt=self.config.dt,
                 numb_duration=self.config.numb_duration,

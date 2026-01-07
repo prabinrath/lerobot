@@ -43,7 +43,7 @@ python "$SCRIPT_DIR/deploy_robot_client.py" \
     --chunk_size_threshold 0.5 \
     --actions_per_chunk 50 \
     --fps 10 \
-    --max_rollout_steps 400 &
+    --max_rollout_steps 800 &
 PIDS+=($!)
 
 # Start Interaction Server
