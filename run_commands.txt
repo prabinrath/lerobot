@@ -1,13 +1,12 @@
 # Dataset Setup
 ---------------------------------------------
 python3 examples/franka_fr3_logos/convert_h5_to_lerobot.py \
-    --h5_path /home/local/ASUAD/prath4/Downloads/raw_datasets/vla_hri_h5/block_in_bowl.h5 \
-    --output_dir ./datasets/vla_hri_block_in_bowl_si \
-    --repo_id franka_fr3/vla_hri_block_in_bowl_si \
-    --task_name "Put the block in the bowl" \
+    --h5_path /home/local/ASUAD/prath4/Downloads/raw_datasets/vla_hri_new_collection_h5/pour_in_bowl_new_collection.h5 \
+    --output_dir ./datasets/vla_hri_new_collection/vla_hri_pour_in_bowl_new_collection_mi \
+    --repo_id franka_fr3/vla_hri_pour_in_bowl_new_collection_mi \
     --down_sample_factor 3 \
-    --fps 30 \
-    --skip_demos 27 36
+    --skip_demos 41 49 \
+    --task_name "task"
 
 python3 examples/franka_fr3_logos/record_dataset.py \
     --robot_id franka_fr3 \
