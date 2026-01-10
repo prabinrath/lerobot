@@ -38,7 +38,7 @@ lerobot-train \
   --steps=50000 \
   --batch_size=64 \
   --log_freq=250 \
-  --save_freq=5000 \
+  --save_freq=10000 \
   --eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
@@ -91,8 +91,8 @@ lerobot-train \
 
 # use when finetuning on the different embodiments
 lerobot-train \
-  --dataset.root=datasets/vla_hri/vla_hri_block_in_bowl_si \
-  --dataset.repo_id=vla_hri_block_in_bowl_si \
+  --dataset.root=datasets/vla_hri/vla_hri_merged_llm2 \
+  --dataset.repo_id=vla_hri_merged_llm2 \
   --policy.type=smolvla \
   --policy.pretrained_path=lerobot/smolvla_base \
   --policy.chunk_size=50 \
@@ -101,12 +101,12 @@ lerobot-train \
   --policy.train_expert_only=false \
   --policy.train_state_proj=true \
   --policy.push_to_hub=false \
-  --output_dir=/mount/scratch3/prabin/outputs/train/smolvla_vla_hri_block_in_bowl_si \
-  --job_name=smolvla_vla_hri_block_in_bowl_si \
-  --steps=20000 \
-  --batch_size=8 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/smolvla_vla_hri_merged_llm2 \
+  --job_name=smolvla_vla_hri_merged_llm2 \
+  --steps=40000 \
+  --batch_size=16 \
   --log_freq=250 \
-  --save_freq=5000 \
+  --save_freq=10000 \
   --eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
@@ -137,37 +137,56 @@ lerobot-train \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/multi_task_1 \
-  --dataset.repo_id=multi_task_1 \
+  --dataset.root=datasets/vla_hri/vla_hri_merged_llm2 \
+  --dataset.repo_id=vla_hri_merged_llm2 \
   --policy.type=pi05 \
   --policy.pretrained_path=lerobot/pi05_base \
-  --policy.compile_model=true \
+  --policy.compile_model=false \
   --policy.gradient_checkpointing=true \
   --policy.push_to_hub=false \
   --policy.dtype=bfloat16 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_multi_task_1 \
-  --job_name=pi05_multi_task_1 \
-  --steps=6000 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_vla_hri_merged_llm2 \
+  --job_name=pi05_vla_hri_merged_llm2 \
+  --steps=30000 \
   --batch_size=32 \
   --log_freq=250 \
-  --save_freq=1000 \
+  --save_freq=10000 \
   --eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/multi_task_1 \
-  --dataset.repo_id=multi_task_1 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/xvla_multi_task_1 \
-  --job_name=xvla_multi_task_1 \
+  --dataset.root=datasets/vla_hri/vla_hri_merged_human2 \
+  --dataset.repo_id=vla_hri_merged_human2 \
+  --policy.type=wall_x \
+  --policy.pretrained_name_or_path=x-square-robot/wall-oss-flow \
+  --policy.push_to_hub=false \
+  --output_dir=/mount/scratch3/prabin/outputs/train/wallx_vla_hri_merged_human2 \
+  --job_name=wallx_vla_hri_merged_human2 \
+  --policy.prediction_mode=diffusion \
+  --policy.attn_implementation=eager \
+  --steps=30000 \
+  --batch_size=32 \
+  --log_freq=250 \
+  --save_freq=10000 \
+  --eval_freq=0 \
+  --wandb.enable=false \
+  --wandb.disable_artifact=true \
+  --policy.device=cuda
+
+lerobot-train \
+  --dataset.root=datasets/vla_hri/vla_hri_merged_llm2 \
+  --dataset.repo_id=vla_hri_merged_llm2 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/xvla_vla_hri_merged_llm2 \
+  --job_name=xvla_vla_hri_merged_llm2 \
   --policy.path=lerobot/xvla-base \
   --policy.push_to_hub=false \
   --policy.dtype=bfloat16 \
-  --steps=3000 \
-  --batch_size=32 \
+  --steps=30000 \
+  --batch_size=16 \
   --log_freq=250 \
-  --save_freq=1000 \
+  --save_freq=10000 \
   --eval_freq=0 \
   --policy.device=cuda \
   --policy.freeze_vision_encoder=false \
@@ -185,21 +204,21 @@ accelerate launch \
   --multi_gpu \
   --num_processes=4 \
   $(which lerobot-train) \
-  --dataset.root=datasets/multi_task_1 \
-  --dataset.repo_id=multi_task_1 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/groot_multi_task_1 \
+  --dataset.root=datasets/vla_hri/vla_hri_merged_human2 \
+  --dataset.repo_id=vla_hri_merged_human2 \
+  --output_dir=/mount/scratch3/prabin/outputs/train/groot_vla_hri_merged_human2 \
   --save_checkpoint=true \
-  --batch_size=8 \
-  --steps=20000 \
-  --save_freq=2000 \
+  --batch_size=16 \
+  --steps=100000 \
+  --save_freq=20000 \
   --log_freq=100 \
   --policy.push_to_hub=false \
   --policy.type=groot \
-  --policy.repo_id=groot_multi_task_1 \
+  --policy.repo_id=groot_vla_hri_merged_human2 \
   --policy.tune_diffusion_model=false \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
-  --job_name=groot_multi_task_1
+  --job_name=groot_vla_hri_merged_human2
 
 # Deployment Setup
 ---------------------------------------------
