@@ -584,6 +584,12 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
         obs_features = hw_to_dataset_features(robot.observation_features, OBS_STR)
         dataset_features = {**action_features, **obs_features}
     
+    # Override n_action_steps with args.actions_per_chunk 
+    if hasattr(policy.config, 'n_action_steps'):
+        original_n_action_steps = policy.config.n_action_steps
+        policy.config.n_action_steps = min(args.actions_per_chunk, original_n_action_steps)
+        logger.info(f"n_action_steps: {original_n_action_steps} -> {policy.config.n_action_steps}")
+
     logger.info("Starting control loop (Ctrl+C to stop)...")
 
     try:
@@ -598,8 +604,8 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
             
             obs = robot.get_observation()
             obs_frame = build_inference_frame(
-                observation=obs, ds_features=dataset_features, device=device
-            )
+                    observation=obs, task=args.task, ds_features=dataset_features, device=device
+                )
             
             obs = preprocess(obs_frame)
             action = policy.select_action(obs)
