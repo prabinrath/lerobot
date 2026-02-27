@@ -156,6 +156,10 @@ class RobotClientConfig:
     max_rollout_steps: int | None = field(
         default=None, metadata={"help": "Maximum number of rollout steps (None for unlimited)"}
     )
+    rollout_video_path: str = field(
+        default="",
+        metadata={"help": "Base path for saving rollout videos (e.g. /path/to/rollout.mp4). Each camera gets its own file like rollout_<camera>.mp4. Empty string disables recording."},
+    )
 
     @property
     def environment_dt(self) -> float:

@@ -73,7 +73,7 @@ class RealSensePointCloudCamera:
 
     Example
     -------
-    >>> cam = RealSensePointCloudCamera(config)
+    >>> cam = RealSensePointCloudCamera(camera, T_base_cam)
     >>> cam.connect()
     >>> data = cam.get_data()
     >>> xyz_at_centre = data.point_at(x=320, y=240)
@@ -85,20 +85,21 @@ class RealSensePointCloudCamera:
             data = cam.get_data()
     """
 
-    def __init__(self, config: RealSenseCameraConfig,
+    def __init__(self, camera: RealSenseCamera,
                  T_base_cam: np.ndarray) -> None:
         """
         Parameters
         ----------
-        config : RealSenseCameraConfig
+        camera : RealSenseCamera
+            A pre-constructed RealSenseCamera instance.  ``use_depth`` must
+            be enabled on its config.
         T_base_cam : (4, 4) float64 homogeneous transform
             Transforms points from the colour optical frame into the robot
             base frame (panda_link0).  Use ``T_BASE_CAM`` for the
             eye-to-hand calibration stored in this module.
         """
-        object.__setattr__(config, "use_depth", True)
-        self._camera = RealSenseCamera(config)
-        self._aligner: rs.align | None = None
+        self._camera = camera
+        self._aligner = rs.align(rs.stream.color)
         self._T_base_cam = np.asarray(T_base_cam, dtype=np.float64)
 
     # ------------------------------------------------------------------
@@ -121,11 +122,9 @@ class RealSensePointCloudCamera:
 
     def connect(self) -> None:
         self._camera.connect()
-        self._aligner = rs.align(rs.stream.color)
 
     def disconnect(self) -> None:
         self._camera.disconnect()
-        self._aligner = None
 
     def __enter__(self):
         self.connect()
@@ -151,7 +150,7 @@ class RealSensePointCloudCamera:
                         colour optical frame (metres); NaN where depth is
                         invalid or out of [0.1 m, 5.0 m].
         """
-        if self._aligner is None:
+        if not self._camera.is_connected:
             raise RuntimeError("Camera is not connected. Call connect() first.")
 
         camera = self._camera
@@ -169,13 +168,12 @@ class RealSensePointCloudCamera:
         color = np.asanyarray(color_frame.get_data())   # (H, W, 3) RGB uint8
         depth = np.asanyarray(depth_frame.get_data())   # (H, W)    uint16 mm
 
-        # Apply any rotation / colour-mode conversion configured on the camera.
+        # Apply rotation / colour-mode conversion to the colour image only.
+        # Depth is kept in its raw sensor frame for correct backprojection;
+        # the intrinsics (ppx, ppy, fx, fy) are defined for that raw frame.
         color = camera._postprocess_image(color)
-        depth = camera._postprocess_image(depth, depth_frame=True)
 
-        # Colour-stream intrinsics: after alignment depth lives in the colour
-        # sensor's coordinate frame, so these are the correct intrinsics for
-        # backprojection.
+        # Colour-stream intrinsics (valid for the raw, unrotated depth frame).
         intr = (
             camera.rs_profile.get_stream(rs.stream.color)
             .as_video_stream_profile()
@@ -204,6 +202,13 @@ class RealSensePointCloudCamera:
         pts_base = (self._T_base_cam @ np.hstack([pts, ones]).T).T[:, :3]
         xyz = pts_base.reshape(H, W, 3).astype(np.float32)
         xyz[invalid] = np.nan
+
+        # Rotate xyz to match the rotated colour image so that
+        # data.point_at(x, y) is pixel-aligned with data.rgb.
+        if camera.rotation in (cv2.ROTATE_90_CLOCKWISE,
+                               cv2.ROTATE_90_COUNTERCLOCKWISE,
+                               cv2.ROTATE_180):
+            xyz = cv2.rotate(xyz, camera.rotation)
 
         return PointCloudData(rgb=color, xyz=xyz)
 
@@ -312,7 +317,8 @@ def main():
         use_depth=True,
     )
 
-    with RealSensePointCloudCamera(config, T_base_cam=T_base_cam) as cam:
+    camera = RealSenseCamera(config)
+    with RealSensePointCloudCamera(camera, T_base_cam=T_base_cam) as cam:
         print("Camera connected.")
 
         # ── choose one viewer ──────────────────────────────────────────

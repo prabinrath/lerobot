@@ -32,15 +32,21 @@ python src/lerobot/async_inference/robot_client.py \
 ```
 """
 
+import copy
 import logging
 import pickle  # nosec
+import queue
 import threading
 import time
+import warnings
 from collections.abc import Callable
 from dataclasses import asdict
+from pathlib import Path
 from pprint import pformat
 from queue import Queue
 from typing import Any
+
+import numpy as np
 
 import draccus
 import grpc
@@ -135,6 +141,17 @@ class RobotClient:
         # Use an event for thread-safe coordination
         self.must_go = threading.Event()
         self.must_go.set()  # Initially set - observations qualify for direct processing
+
+        # Video recording buffer: camera_name -> list of (H, W, C) uint8 numpy frames
+        self._frame_buffer: dict[str, list[np.ndarray]] = {} if config.rollout_video_path else None
+        self._camera_keys: set[str] = set(self.robot.config.cameras.keys())
+        # Background queue for off-hot-path frame conversion
+        self._frame_queue: queue.Queue | None = queue.Queue() if config.rollout_video_path else None
+        if self._frame_queue is not None:
+            self._frame_writer_thread = threading.Thread(
+                target=self._frame_writer_loop, daemon=True, name="frame_writer"
+            )
+            self._frame_writer_thread.start()
 
     @property
     def running(self):
@@ -454,6 +471,16 @@ class RobotClient:
                     f"Ts={observation.get_timestamp():.6f} | Capturing observation took {obs_capture_time:.6f}s"
                 )
 
+            # Buffer image frames for video recording
+            if self._frame_queue is not None:
+                for key, val in raw_observation.items():
+                    cam_name = key.split(".")[-1]
+                    if cam_name not in self._camera_keys:
+                        continue
+                    # Lightweight copy to avoid sharing memory with downstream consumers
+                    frame = val.clone() if isinstance(val, torch.Tensor) else copy.copy(val)
+                    self._frame_queue.put_nowait((cam_name, frame))
+
             return raw_observation
 
         except Exception as e:
@@ -488,7 +515,53 @@ class RobotClient:
         if max_steps is not None and step >= max_steps:
             self.logger.info(f"Completed {step} rollout steps.")
 
+        self._flush_video_buffer()
+
         return _captured_observation, _performed_action
+
+    def _frame_writer_loop(self):
+        """Background thread: converts raw frames and appends to _frame_buffer."""
+        while True:
+            item = self._frame_queue.get()
+            if item is None:  # sentinel
+                self._frame_queue.task_done()
+                break
+            cam_name, val = item
+            arr = val.numpy() if isinstance(val, torch.Tensor) else np.asarray(val)
+            self._frame_buffer.setdefault(cam_name, []).append(arr.astype(np.uint8))
+            self._frame_queue.task_done()
+
+    def _flush_video_buffer(self):
+        """Write buffered camera frames to mp4 files using ffmpeg."""
+        if self._frame_queue is not None:
+            # Wait for background writer to finish processing all queued frames
+            self._frame_queue.join()
+        if not self._frame_buffer or not self.config.rollout_video_path:
+            return
+
+        folder = Path(self.config.rollout_video_path)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        # Find the next incremental index by scanning existing mp4 files
+        existing = [p.stem for p in folder.glob("*.mp4")]
+        used_indices = set()
+        for name in existing:
+            parts = name.rsplit("_", 1)
+            if len(parts) == 2 and parts[-1].isdigit():
+                used_indices.add(int(parts[-1]))
+        next_idx = max(used_indices, default=-1) + 1
+
+        for cam_name, frames in self._frame_buffer.items():
+            if not frames:
+                continue
+            video_path = folder / f"{cam_name}_{next_idx:04d}.mp4"
+            import imageio
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", "pkg_resources is deprecated as an API", category=DeprecationWarning)
+                imageio.mimsave(str(video_path), frames, fps=self.config.fps)
+            self.logger.info(f"Saved rollout video for camera '{cam_name}' -> {video_path}")
+
+        self._frame_buffer.clear()
 
 
 @draccus.wrap()
