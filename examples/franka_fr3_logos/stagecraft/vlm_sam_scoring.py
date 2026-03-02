@@ -70,6 +70,7 @@ class SAM_VLM_Planner:
                 cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = cap.read()
                 if ret:
+                    frame = cv2.resize(frame, (224, 224))
                     frames.append(frame)
 
             cap.release()
@@ -352,7 +353,9 @@ class SAM_VLM_Planner:
 
                 pick_detections = pick_result[0]["detections"]
                 if not pick_detections or len(pick_detections) == 0:
-                    raise ValueError(f"No detections found for object: {object_name}")
+                    # raise ValueError(f"No detections found for object: {object_name}")
+                    print(f"No detections found for object: {object_name}")
+                    continue
                 
                 pick_bounding_boxes = pick_detections[0]['box_xyxy']
                 u = (pick_bounding_boxes[0] + pick_bounding_boxes[2]) * 0.5

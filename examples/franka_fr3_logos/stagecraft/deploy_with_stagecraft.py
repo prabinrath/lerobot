@@ -153,14 +153,16 @@ def main():
     for idx in range(args.eval_rollouts):
         rollout_node.wait_for_start()
         
-        front_img = cv2.cvtColor(front_cam.async_read(), cv2.COLOR_RGB2BGR)
-        wrist_img = cv2.cvtColor(wrist_cam.async_read(), cv2.COLOR_RGB2BGR)
+        front_img_ = cv2.cvtColor(front_cam.async_read(), cv2.COLOR_RGB2BGR)
+        wrist_img_ = cv2.cvtColor(wrist_cam.async_read(), cv2.COLOR_RGB2BGR)
+        front_img = cv2.resize(front_img_, (224, 224))
+        wrist_img = cv2.resize(wrist_img_, (224, 224))
         current_observation = np.hstack([front_img, wrist_img])
         throw_points = sam_vlm_planner.sam_vlm_planner(
             results=vlm_context,
             current_observation=current_observation,
             task_instruction=args.task,
-            front_cam_img=cv2.cvtColor(front_img, cv2.COLOR_BGR2RGB),
+            front_cam_img=cv2.cvtColor(front_img_, cv2.COLOR_BGR2RGB),
             run_folder=f"logs/stagecraft/{args.experiment_name}/eval_{idx}"
         )
 
