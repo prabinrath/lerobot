@@ -87,6 +87,7 @@ def main():
                         help="Number of incontext VLA rollouts")
 
     args = parser.parse_args()
+    args.experiment_name += f"_{args.policy_type}"
 
     robot_config = create_robot_config(args)
 
@@ -113,6 +114,9 @@ def main():
         used_indices = {int(p.stem.rsplit("_", 1)[-1]) for p in sorted_videos if p.stem.rsplit("_", 1)[-1].isdigit()}
         rollout_idx = max(used_indices, default=-1) + 1
 
+        logger.info("=" * 60)
+        logger.info("StageCraft: Starting in-context rollouts...")
+        logger.info("=" * 60)
         for _ in range(args.num_incontext_rollouts):
             rollout_node.run_inference()
             move_rollout_videos(base_video_path, rollout_node.is_success, rollout_idx, logger)
@@ -121,6 +125,10 @@ def main():
     # Update paths based on rollout results
     success_path = base_video_path / "success"
     failure_path = base_video_path / "failure"
+
+    if rollout_node.cached_async_client is None:
+        rollout_node.cached_async_client = load_robot_client(robot_config=robot_config, args=args, logger=logger)
+        rollout_node.cached_async_checkpoint_path = args.checkpoint_path
     
     front_cam = rollout_node.cached_async_client.robot.cameras.get("front_img")
     wrist_cam = rollout_node.cached_async_client.robot.cameras.get("wrist_img")
@@ -137,17 +145,23 @@ def main():
         performance_tags=['success', 'failure'],
     )
 
+    if args.eval_rollouts > 0:
+        logger.info("=" * 60)
+        logger.info("StageCraft: Starting eval rollouts...")
+        logger.info("=" * 60)
     # Run with stagecraft
-    for _ in range(args.eval_rollouts):
+    for idx in range(args.eval_rollouts):
+        rollout_node.wait_for_start()
+        
         front_img = cv2.cvtColor(front_cam.async_read(), cv2.COLOR_RGB2BGR)
         wrist_img = cv2.cvtColor(wrist_cam.async_read(), cv2.COLOR_RGB2BGR)
         current_observation = np.hstack([front_img, wrist_img])
         throw_points = sam_vlm_planner.sam_vlm_planner(
             results=vlm_context,
             current_observation=current_observation,
-            task_instruction="stack the cups",
+            task_instruction=args.task,
             front_cam_img=cv2.cvtColor(front_img, cv2.COLOR_BGR2RGB),
-            run_folder="logs/stagecraft/stack_cups"
+            run_folder=f"logs/stagecraft/{args.experiment_name}/eval_{idx}"
         )
 
         for point in throw_points:
@@ -222,7 +236,37 @@ def create_robot_config(args):
     return robot_config
 
 
-def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=None, client=None):
+def load_robot_client(robot_config, args, logger):
+    from lerobot.async_inference.configs import RobotClientConfig
+    from lerobot.async_inference.robot_client import RobotClient
+    
+    client_config = RobotClientConfig(
+        robot=robot_config,
+        server_address=args.server_address,
+        policy_type=args.policy_type,
+        pretrained_name_or_path=str(args.checkpoint_path),
+        policy_device=args.policy_device,
+        task=args.task,
+        actions_per_chunk=args.actions_per_chunk,
+        chunk_size_threshold=args.chunk_size_threshold,
+        fps=args.fps,
+        aggregate_fn_name=args.aggregate_fn_name,
+        debug_visualize_queue_size=args.debug_visualize_queue_size,
+        max_rollout_steps=args.max_rollout_steps,
+        rollout_video_path=str(Path("logs/stagecraft") / args.experiment_name) if args.experiment_name else None,
+    )
+    client = RobotClient(client_config)
+
+    logger.info("Connecting to policy server and robot...")
+    if not client.start():
+        logger.error("Failed to start robot client")
+        return client
+    logger.info("Successfully connected!")
+
+    return client
+
+
+def run_async_inference(robot_config, args, logger, stop_event=None, client=None):
     """Run with async inference (policy server)
        Note: Policies with n_obs_steps > 1 are not yet supported for Async inference
              as the policy server does not manage the observation queue properly. affected
@@ -230,7 +274,6 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
     
     Args:
         robot_config: Robot configuration
-        checkpoint_path: Path to policy checkpoint
         args: Command line arguments
         logger: Logger instance to use
         stop_event: Optional threading.Event to signal early termination
@@ -244,26 +287,7 @@ def run_async_inference(robot_config, checkpoint_path, args, logger, stop_event=
     # Create client if not provided (non-interactive mode)
     owns_client = client is None
     if client is None:
-        from lerobot.async_inference.configs import RobotClientConfig
-        from lerobot.async_inference.robot_client import RobotClient
-        
-        client_config = RobotClientConfig(
-            robot=robot_config,
-            server_address=args.server_address,
-            policy_type=args.policy_type,
-            pretrained_name_or_path=str(checkpoint_path),
-            policy_device=args.policy_device,
-            task=args.task,
-            actions_per_chunk=args.actions_per_chunk,
-            chunk_size_threshold=args.chunk_size_threshold,
-            fps=args.fps,
-            aggregate_fn_name=args.aggregate_fn_name,
-            debug_visualize_queue_size=args.debug_visualize_queue_size,
-            max_rollout_steps=args.max_rollout_steps,
-            rollout_video_path=str(Path("logs/stagecraft") / args.experiment_name) if args.experiment_name else None,
-        )
-        client = RobotClient(client_config)
-    
+        client = load_robot_client(robot_config=robot_config, args=args, logger=logger)    
     try:
         if owns_client:
             logger.info("Connecting to policy server and robot...")
@@ -362,6 +386,14 @@ class RolloutManager:
         self.logger.info("Robot reset command sent... Will wait for 3 secs")
         time.sleep(3)
 
+    def wait_for_start(self) -> None:
+        """Block until the spacemouse button T is pressed."""
+        self.logger.info("Waiting for spacemouse button T to start / resume rollout...")
+        self.awaiting_start = True
+        self.start_event.clear()
+        self.start_event.wait()
+        self.awaiting_start = False
+
     def close_client(self):
         """Stop and discard the cached RobotClient so the next run_inference creates a fresh one."""
         if self.cached_async_client is not None:
@@ -403,14 +435,10 @@ class RolloutManager:
 
         self.logger.info(f"Rollout: policy_type={policy_type}, checkpoint={checkpoint_path}, task='{task}', max_steps={self.args.max_rollout_steps or 'unlimited'}")
 
-        result_file = Path(f"logs/results/stagecraft/{self.args.experiment_name}/{policy_type}_result.log")
+        result_file = Path(f"logs/stagecraft/{self.args.experiment_name}/{policy_type}_result.log")
         result_file.parent.mkdir(parents=True, exist_ok=True)
 
-        self.logger.info("Waiting for spacemouse button T to start rollout...")
-        self.awaiting_start = True
-        self.start_event.clear()
-        self.start_event.wait()
-        self.awaiting_start = False
+        self.wait_for_start()
 
         self.running = True
         self.stop_event.clear()
@@ -423,7 +451,7 @@ class RolloutManager:
                 client.reset()
 
             client = run_async_inference(
-                self.robot_config, Path(checkpoint_path), self.args,
+                self.robot_config, self.args,
                 self.logger, self.stop_event, client=client,
             )
 

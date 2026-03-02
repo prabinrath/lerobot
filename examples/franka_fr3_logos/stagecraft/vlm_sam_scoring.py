@@ -7,11 +7,12 @@ import cv2
 from PIL import Image
 import numpy as np
 import json
-import textwrap
+from final_prompt import prompt_template
 import time
 from google import genai
 from google.genai import types
 import io
+import re
 
 
 class SAM_VLM_Planner:
@@ -151,79 +152,6 @@ class SAM_VLM_Planner:
         if not results:
             print("No results to send to VLM")
             return {}
-
-        # Default prompt template
-        if prompt_template is None:
-            prompt_template = textwrap.dedent("""
-            You are a robot learning policy execution expert who has to gauge the performance of a policy that will be executed in a particular environment with a FRANKA EMIKA Research 3 robot:
-            
-            You are provided with {n_videos} spatiotemporal-mosaics. Each mosaic consists of equally-spaced "front_camera_RGB, wrist_camera_RGB" frames showing the progression of a policy execution.
-            The videos are labeled v1 through v{n_videos} and are interleaved with their labels above. Their labels and expected outcome tags are:
-            
-            {video_labels}
-            
-            The success and failure tags are decided depending on whether the success conditions are met during policy execution.
-            Provide a thorough explanation in the rationale part of the output.
-            
-            As a policy execution expert your task has two parts:
-                    
-                    First part:
-                        (A) Qualitative analysis
-                        1. analyze the conditions of the environment as well as the spatio-temporal evolution of the objects present in the environment that result into the given performance label for the spatiotemporal-mosaics
-                        2. provide descriptions for each distinct intial state through out all the rollouts
-                    
-                        (B) Quantitative analysis
-                        1. Find the probability of task completion, only taking in account the clutter present in the environment, assign a probabilistic measure to each inital state as per the descriptions (the inital state is the first front and wrist segment in the spatiotemporal-mosaic)
-                        by taking in account the number of times the policy succeded or failed in all rollouts for that particular initial state.
-
-                    The expected output will be in the form:
-                        "prediction_rollouts": {{
-                                        "initial_state_descriptions": ["description 1", "description 2", "description 3".........................................description n],
-                                        "success_frequency": ["f1", "f2", "f3", .............................................................."fn"]
-                                    }},
-                                            
-
-                    Second part:
-                        Consider the "new_initial_state_image" provided at the end of the image sequence, this is the initial state image of the environment, you have to provide the following for it:
-                                
-                                1. predict the performance of the policy from the "new_initial_state" and choose from the list of options of "no action needed", "clutter removal possible", "human intervention required"
-                                2. identify and categorize the objects in the case of "clutter removal possible"
-                                3. identify and categorize the objects in the case of "human intervention required"
-                    
-                                              
-                   IMP NOTE: THE "new_initial_state_image" shows the environment available currently in which the policy will be executed, and has the front and wrist observations of the same environment.
-                    The expected output will be in the form:
-                        "prediction_new_inital_state": {{
-                                                "predicted_outcome": "successful | failure | uncertain",
-                                                "recommended_action": "no action needed | clutter removal possible | human intervention needed",
-                                                "predicted_performance_post_recommended_action": "performance number",
-                                                "rationale": ["string"]
-                                            }}           
-
-                                        
-                        "clutter_removal": {{
-                                                    "needed": "true | false",
-                            "removable_objects": [
-                                                    {{
-                                                        "object_name": "string",  (example: "object_name": "red block")
-                                                        "reason_to_remove": "string"  (example: "reason_to_remove":"red block is not present in the successful rollouts")
-                                                    }}
-                                                ],
-                            "non_removable_or_risky": [
-                                                        {{
-                                                            "object_name": "string",
-                                                            "reason": "string"
-                                                        }}
-                                                    ],
-                            "post_removal_expectation": {{
-                                                            "predicted_outcome": "successful | failure | uncertain"
-                                                        }}
-                                    }}
-            
-            task_instruction: {task_instruction}
-
-            Respond ONLY with a valid JSON object matching the structure above. Do not include any prose, explanation, or markdown formatting outside the JSON block.
-            """)
 
         api_key = os.getenv("GOOGLE_API_KEY")
         if not api_key:
@@ -383,29 +311,38 @@ class SAM_VLM_Planner:
         # Call send_to_vlm with rollout results and current observation
         vlm_responses = self.send_to_vlm(
             results=results,
+            prompt_template=prompt_template,
             task_instruction=task_instruction,
             new_initial_state=current_observation,
             output_dir=run_folder,
         )
 
         # Extract removable objects identified by the VLM
-        analysis = (vlm_responses or {}).get("analysis") or {}
-        removable = (analysis.get("clutter_removal") or {}).get("removable_objects") or []
+        parsed = (vlm_responses or {}).get("analysis") or {}
+        inner = parsed.get("policy_execution_analysis") or {}
+        deduced_actions = inner.get("deduced_actions") or []
 
+        # Parse object names out of "@remove(object_name)" strings, ignoring "@add(...)" actions
         objects = []
-        for obj in removable:
-            if isinstance(obj, dict) and "object_name" in obj and obj["object_name"] is not None:
-                objects.append(obj["object_name"])
+        for action_str in deduced_actions:
+            if isinstance(action_str, str):
+                match = re.match(r'@(\w+)\((.+)\)', action_str)
+                if match:
+                    primitive = match.group(1).strip().lower()
+                    if primitive == "add":
+                        print(f"Ignoring unsupported 'add' action: {action_str}")
+                        continue
+                    objects.append(match.group(2).strip())
 
         data = {"object": objects}
 
-        print(f"VLM planner response:{data}")
+        print(f"VLM planner response:{deduced_actions}")
 
         throw_points = []
 
         if len(objects)!= 0:
             for i in range(len(objects)):
-                object_name = data["object"][i]
+                object_name = data["object"][i].replace("_", " ")
 
                 pick_result = run_sam3_detection(
                     images=front_cam_img,
