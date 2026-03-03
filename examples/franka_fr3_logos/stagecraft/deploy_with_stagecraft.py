@@ -26,7 +26,7 @@ import numpy as np
 from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
-from vlm_sam_scoring import SAM_VLM_Planner
+from examples.franka_fr3_logos.stagecraft.vlm_sam_scoring_gemini import SAM_VLM_Planner
 from pointcloud_camera import RealSensePointCloudCamera
 from pick_place import PickPlaceHandler, PrimitiveParam
 
