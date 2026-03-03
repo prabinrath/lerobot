@@ -146,7 +146,7 @@ class SAM_VLM_Planner:
     
 
     def send_to_vlm(self, results, task_instruction, new_initial_state,
-                    prompt_template=None, model_id="gemini-3-flash-preview",
+                    prompt_template=None, model_id="gemini-3.1-pro-preview",
                     save_responses=True, output_file='vlm_responses.json', output_dir=None):
         """Send coalesced rollout images plus a new observation to the VLM for analysis."""
 
