@@ -18,10 +18,9 @@ from __future__ import annotations
 
 import importlib
 import logging
-from typing import Any, TypedDict
+from typing import Any, TypedDict, Unpack
 
 import torch
-from typing_extensions import Unpack
 
 from lerobot.configs.policies import PreTrainedConfig
 from lerobot.configs.types import FeatureType
@@ -51,7 +50,11 @@ from lerobot.processor.converters import (
     transition_to_batch,
     transition_to_policy_action,
 )
-from lerobot.utils.constants import POLICY_POSTPROCESSOR_DEFAULT_NAME, POLICY_PREPROCESSOR_DEFAULT_NAME
+from lerobot.utils.constants import (
+    ACTION,
+    POLICY_POSTPROCESSOR_DEFAULT_NAME,
+    POLICY_PREPROCESSOR_DEFAULT_NAME,
+)
 
 
 def get_policy_class(name: str) -> type[PreTrainedPolicy]:
@@ -91,6 +94,10 @@ def get_policy_class(name: str) -> type[PreTrainedPolicy]:
         from lerobot.policies.pi0.modeling_pi0 import PI0Policy
 
         return PI0Policy
+    elif name == "pi0_fast":
+        from lerobot.policies.pi0_fast.modeling_pi0_fast import PI0FastPolicy
+
+        return PI0FastPolicy
     elif name == "pi05":
         from lerobot.policies.pi05.modeling_pi05 import PI05Policy
 
@@ -246,7 +253,7 @@ def make_pre_post_processors(
             }
 
             # Also ensure postprocessing slices to env action dim and unnormalizes with dataset stats
-            env_action_dim = policy_cfg.output_features["action"].shape[0]
+            env_action_dim = policy_cfg.output_features[ACTION].shape[0]
             postprocessor_overrides["groot_action_unpack_unnormalize_v1"] = {
                 "stats": kwargs.get("dataset_stats"),
                 "normalize_min_max": True,

@@ -27,7 +27,7 @@ class DatasetConfig:
     # "dataset_index" into the returned item. The index mapping is made according to the order in which the
     # datasets are provided.
     repo_id: str
-    # Root directory where the dataset will be stored (e.g. 'dataset/path').
+    # Root directory where the dataset will be stored (e.g. 'dataset/path'). If None, defaults to $HF_LEROBOT_HOME/repo_id.
     root: str | None = None
     episodes: list[int] | None = None
     image_transforms: ImageTransformsConfig = field(default_factory=ImageTransformsConfig)
@@ -47,6 +47,7 @@ class WandBConfig:
     notes: str | None = None
     run_id: str | None = None
     mode: str | None = None  # Allowed values: 'online', 'offline' 'disabled'. Defaults to 'online'
+    add_tags: bool = True  # If True, save configuration as tags in the WandB run.
 
 
 @dataclass
