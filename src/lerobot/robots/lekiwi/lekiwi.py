@@ -22,13 +22,13 @@ from typing import Any
 
 import numpy as np
 
-from lerobot.cameras.utils import make_cameras_from_configs
+from lerobot.cameras import make_cameras_from_configs
 from lerobot.motors import Motor, MotorCalibration, MotorNormMode
 from lerobot.motors.feetech import (
     FeetechMotorsBus,
     OperatingMode,
 )
-from lerobot.processor import RobotAction, RobotObservation
+from lerobot.types import RobotAction, RobotObservation
 from lerobot.utils.decorators import check_if_already_connected, check_if_not_connected
 
 from ..robot import Robot
@@ -72,6 +72,12 @@ class LeKiwi(Robot):
         )
         self.arm_motors = [motor for motor in self.bus.motors if motor.startswith("arm")]
         self.base_motors = [motor for motor in self.bus.motors if motor.startswith("base")]
+        depth_cameras = [name for name, cfg in config.cameras.items() if getattr(cfg, "use_depth", False)]
+        if depth_cameras:
+            raise NotImplementedError(
+                f"Depth cameras are not supported on LeKiwi (got depth-enabled cameras: {depth_cameras}). "
+                "The host/client transport only carries color frames."
+            )
         self.cameras = make_cameras_from_configs(config.cameras)
 
     @property
