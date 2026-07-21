@@ -528,7 +528,7 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
     from lerobot.policies.factory import get_policy_class, make_pre_post_processors
     from lerobot.policies.utils import build_inference_frame, make_robot_action
     from lerobot.robots.utils import make_robot_from_config
-    from lerobot.datasets.utils import hw_to_dataset_features
+    from lerobot.utils.feature_utils import hw_to_dataset_features
     from lerobot.utils.constants import ACTION, OBS_STR
     
     device = torch.device(args.policy_device)

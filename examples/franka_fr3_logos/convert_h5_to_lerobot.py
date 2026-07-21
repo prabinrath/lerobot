@@ -46,7 +46,7 @@ import numpy as np
 
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-from lerobot.datasets.utils import build_dataset_frame, hw_to_dataset_features
+from lerobot.utils.feature_utils import build_dataset_frame, hw_to_dataset_features
 from lerobot.datasets.video_utils import VideoEncodingManager
 from lerobot.model.kinematics import RobotKinematics
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
