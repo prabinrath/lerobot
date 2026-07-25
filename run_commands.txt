@@ -38,7 +38,7 @@ lerobot-train \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=10000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
   --policy.device=cuda
@@ -59,7 +59,7 @@ lerobot-train \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=20000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
   --policy.device=cuda
@@ -81,7 +81,7 @@ lerobot-train \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=5000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=false \
   --wandb.disable_artifact=true \
   --policy.device=cuda \
@@ -106,7 +106,7 @@ lerobot-train \
   --batch_size=16 \
   --log_freq=250 \
   --save_freq=10000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
   --policy.empty_cameras=0 \
@@ -129,7 +129,7 @@ lerobot-train \
   --batch_size=64 \
   --log_freq=250 \
   --save_freq=5000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
   --policy.empty_cameras=0 \
@@ -150,7 +150,7 @@ lerobot-train \
   --batch_size=32 \
   --log_freq=250 \
   --save_freq=10000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=true \
   --wandb.disable_artifact=true \
   --policy.device=cuda
@@ -169,7 +169,7 @@ lerobot-train \
   --batch_size=32 \
   --log_freq=250 \
   --save_freq=10000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --wandb.enable=false \
   --wandb.disable_artifact=true \
   --policy.device=cuda
@@ -186,7 +186,7 @@ lerobot-train \
   --batch_size=16 \
   --log_freq=250 \
   --save_freq=10000 \
-  --eval_freq=0 \
+  --env_eval_freq=0 \
   --policy.device=cuda \
   --policy.freeze_vision_encoder=false \
   --policy.freeze_language_encoder=false \
