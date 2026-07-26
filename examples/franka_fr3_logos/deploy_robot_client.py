@@ -101,7 +101,8 @@ def main():
         "--policy_type", 
         type=str, 
         default="",
-        choices=["act", "diffusion", "vqbet", "smolvla", "groot", "pi0", "pi05", "xvla", "wall_x", ""],
+        choices=["act", "diffusion", "vqbet", "smolvla", "groot", "pi0", "pi05", "xvla", "wall_x",
+                 "keyframe_mnemonics", "keyframe_buffer", ""],
         help="Type of policy to use (can be provided via command in interactive mode)"
     )
     parser.add_argument(

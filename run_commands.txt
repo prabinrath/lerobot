@@ -26,14 +26,14 @@ python examples/franka_fr3_logos/merge_datasets.py \
 # Training Setup
 ---------------------------------------------
 lerobot-train \
-  --dataset.root=/home/local/ASUAD/prath4/Repos/lerobot/datasets/franka_fr3_softtoy_in_drawer \
-  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --dataset.root=datasets/remember_color_3 \
+  --dataset.repo_id=remember_color_3 \
   --policy.type=act \
   --policy.chunk_size=16 \
   --policy.n_action_steps=16 \
   --policy.push_to_hub=false \
-  --output_dir=outputs/train/act_franka_fr3_softtoy \
-  --job_name=act_franka_fr3_softtoy \
+  --output_dir=/scratch/prath4/lerobot/outputs/train/act_remember_color_3 \
+  --job_name=act_remember_color_3 \
   --steps=50000 \
   --batch_size=64 \
   --log_freq=250 \
@@ -44,8 +44,8 @@ lerobot-train \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/franka_fr3_softtoy_in_drawer \
-  --dataset.repo_id=franka_fr3_softtoy_in_drawer \
+  --dataset.root=datasets/remember_color_3 \
+  --dataset.repo_id=remember_color_3 \
   --policy.type=diffusion \
   --policy.n_obs_steps=2 \
   --policy.horizon=16 \
@@ -53,8 +53,8 @@ lerobot-train \
   --policy.noise_scheduler_type=DDIM \
   --policy.crop_shape=null \
   --policy.push_to_hub=false \
-  --output_dir=outputs/train/diffusion_franka_fr3_softtoy_in_drawer \
-  --job_name=diffusion_franka_fr3_softtoy_in_drawer \
+  --output_dir=/scratch/prath4/lerobot/outputs/train/diffusion_remember_color_3 \
+  --job_name=diffusion_remember_color_3 \
   --steps=100000 \
   --batch_size=64 \
   --log_freq=250 \
@@ -136,17 +136,17 @@ lerobot-train \
   --policy.device=cuda
 
 lerobot-train \
-  --dataset.root=datasets/vla_hri/vla_hri_merged_llm2 \
-  --dataset.repo_id=vla_hri_merged_llm2 \
+  --dataset.root=datasets/remember_color_3 \
+  --dataset.repo_id=remember_color_3 \
   --policy.type=pi05 \
   --policy.pretrained_path=lerobot/pi05_base \
   --policy.compile_model=false \
   --policy.gradient_checkpointing=true \
   --policy.push_to_hub=false \
   --policy.dtype=bfloat16 \
-  --output_dir=/mount/scratch3/prabin/outputs/train/pi05_vla_hri_merged_llm2 \
-  --job_name=pi05_vla_hri_merged_llm2 \
-  --steps=30000 \
+  --output_dir=/scratch/prath4/lerobot/outputs/train/pi05_remember_color_3 \
+  --job_name=pi05_remember_color_3 \
+  --steps=10000 \
   --batch_size=32 \
   --log_freq=250 \
   --save_freq=10000 \
