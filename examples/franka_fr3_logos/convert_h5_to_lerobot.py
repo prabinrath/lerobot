@@ -38,6 +38,7 @@ Usage:
 """
 
 import argparse
+import json
 import logging
 from pathlib import Path
 
@@ -239,7 +240,22 @@ def convert_h5_to_lerobot(
             logger.info(f"Language descriptions: {language_descriptions}")
     else:
         logger.info(f"No language file found at {language_file_path}. Using default task name: '{task_name}'")
-    
+
+    # JSON sidecar (same name as h5) takes precedence: uniform description + ignore list
+    json_file_path = h5_file_path.with_suffix('.json')
+    if json_file_path.exists():
+        with open(json_file_path, 'r') as jf:
+            json_config = json.load(jf)
+        logger.info(f"Found JSON config: {json_file_path}")
+        if json_config.get("description"):
+            task_name = json_config["description"]
+            language_descriptions = None  # force uniform description for all episodes
+            logger.info(f"Using JSON description for all episodes: '{task_name}'")
+        if json_config.get("ignore_index"):
+            json_ignore = [int(i) for i in json_config["ignore_index"]]
+            skip_demos = sorted(set((skip_demos or []) + json_ignore))
+            logger.info(f"Ignoring episodes from JSON ignore_index: {json_ignore}")
+
     # Initialize kinematics if using EE space
     kinematics = None
     if use_ee:
