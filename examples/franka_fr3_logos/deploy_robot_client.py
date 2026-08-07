@@ -54,6 +54,14 @@ Example (with end-effector control):
         --policy_type diffusion \
         --task "pick and place task" \
         --fps 10
+
+Example (keyframe_mnemonics + buffer render):
+    python deploy_robot_client.py \
+        --use_sync_inference \
+        --checkpoint_path ../keyframe-mnemonics/outputs/km_remember_color_2 \
+        --policy_type keyframe_mnemonics \
+        --fps 10 --max_relative_target 0.03 --actions_per_chunk 8 \
+        --render_buffer --save_buffer_dir km_recordings
 """
 
 import argparse
@@ -64,6 +72,13 @@ from pathlib import Path
 from lerobot.cameras.configs import Cv2Rotation
 from lerobot.cameras.realsense.configuration_realsense import RealSenseCameraConfig
 from lerobot.robots.franka_fr3.config_franka_fr3 import FrankaFR3Config
+
+# Third-party policy plugins (keyframe_mnemonics, keyframe_buffer) register
+try:
+    from lerobot.utils.import_utils import register_third_party_plugins
+    register_third_party_plugins()
+except Exception as _plugin_err:  # keep non-plugin policies (act, diffusion, ...) working
+    logging.getLogger("deploy_robot_client").debug(f"plugin registration skipped: {_plugin_err}")
 
 
 def main():
@@ -183,12 +198,24 @@ def main():
     
     # Debug options
     parser.add_argument(
-        "--debug_visualize_queue_size", 
+        "--debug_visualize_queue_size",
         action="store_true",
         help="Visualize action queue size during execution (useful for tuning)"
     )
     parser.add_argument(
-        "--dry_run", 
+        "--render_buffer",
+        action="store_true",
+        help="Render the keyframe memory buffer + current obs in a live window (keyframe policies only)."
+    )
+    parser.add_argument(
+        "--save_buffer_dir",
+        type=str,
+        default=None,
+        help="Directory to record the keyframe buffer to after the rollout: buffer_render_<ts>.mp4 "
+             "+ buffer_log_<ts>.csv. Works with or without --render_buffer; keyframe policies only."
+    )
+    parser.add_argument(
+        "--dry_run",
         action="store_true",
         help="Test configuration without connecting to robot"
     )
@@ -508,6 +535,155 @@ def add_resize_processor_if_needed(preprocessor, policy_config, robot_config, lo
         logger.info(f"Added resize processor at beginning of pipeline with size {resize_size}")
 
 
+def _km_canvas(camera, total_slots, slot_images, buf_fill, step, priority, tile=200):
+    """Build the keyframe-buffer visualization canvas for one step.
+
+    Args:
+        camera: Camera name whose per-slot images are rendered
+        total_slots: Number of buffer slots (keyframes plus current obs)
+        slot_images: Per-slot images keyed observation.images.<camera><i>
+        buf_fill: Number of keyframes currently held in the buffer
+        step: Current rollout step, shown in the header
+        priority: Priority of the last accepted keyframe
+        tile: Pixel size of each rendered image tile
+
+    Returns:
+        An RGB image (one row per slot) with a header line.
+    """
+    import cv2
+    import numpy as np
+
+    # Build one row per slot: keyframes first, current obs last
+    rows = []
+    for i in range(1, total_slots + 1):
+        img = slot_images[f"observation.images.{camera}{i}"]
+        is_current = i == total_slots
+        is_empty = not is_current and not np.any(img)
+        label = "CURRENT OBS" if is_current else f"keyframe {i}" + (" (EMPTY)" if is_empty else "")
+        color = (0, 200, 0) if is_current else ((90, 90, 90) if is_empty else (220, 220, 220))
+        im = cv2.resize(img.astype(np.uint8), (tile, tile), interpolation=cv2.INTER_NEAREST)
+        cv2.putText(im, label, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA)
+        rows.append(im)
+
+    # Stack the slots and prepend a header with step / priority / fill
+    canvas = np.vstack(rows)
+    header = np.zeros((28, canvas.shape[1], 3), dtype=np.uint8)
+    cv2.putText(header, f"step {step} | last kf priority {priority:.2f} | buffer fill {buf_fill}/{total_slots - 1}",
+                (6, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
+    return np.vstack([header, canvas])
+
+
+def render_km_buffer(policy, step, display=True, save_dir=None, fps=10,
+                     window_name="KM buffer + current obs", tile=200):
+    """Display and/or record the keyframe_mnemonics memory buffer at one step.
+
+    No-op for policies without a keyframe buffer. When save_dir is set, this only
+    captures the frame into RAM; finalize_km_buffer_recording writes the mp4/csv
+    after the rollout. Any error is logged once and never breaks the control loop.
+
+    Args:
+        policy: The loaded policy (must expose a `_buffer` to do anything)
+        step: Current rollout step
+        display: Show a live matplotlib window (headless OpenCV has no cv2.imshow)
+        save_dir: If set, capture this step's frame in RAM for later recording
+        fps: Recording frame rate, passed through to the finalizer
+        window_name: Title of the live window
+        tile: Pixel size of each rendered image tile
+    """
+    buf = getattr(policy, "_buffer", None)
+    if buf is None:
+        return
+    try:
+        import matplotlib.pyplot as plt
+        from problems.real_robot_problem.lerobot_utils import build_policy_observation
+
+        # Expand the flat buffer into per-slot images; last_priority is the last
+        # accepted keyframe's score (the selector already ran in select_action)
+        camera = policy.config.camera_name
+        total_slots = policy.config.total_slots
+        slots = build_policy_observation(buf.get().cpu().numpy(), total_slots)
+        priority = buf.last_priority
+
+        # Recording: stash the raw slot images and scalars in RAM (no disk I/O here)
+        if save_dir is not None:
+            caps = getattr(render_km_buffer, "_captures", None)
+            if caps is None:
+                import datetime
+                caps = render_km_buffer._captures = []
+                render_km_buffer._meta = (camera, total_slots, tile)
+                render_km_buffer._ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            caps.append((step, priority, len(buf),
+                         {k: v for k, v in slots.items() if "image" in k}))
+
+        # Live window: reuse a single figure across steps
+        if display:
+            full = _km_canvas(camera, total_slots, slots, len(buf), step, priority, tile)
+            fig = getattr(render_km_buffer, "_fig", None)
+            if fig is None:
+                plt.ion()
+                fig, ax = plt.subplots(num=window_name)
+                ax.set_axis_off()
+                fig.tight_layout(pad=0)
+                render_km_buffer._fig = fig
+                render_km_buffer._im = ax.imshow(full)
+            else:
+                render_km_buffer._im.set_data(full)
+            fig.canvas.draw_idle()
+            fig.canvas.flush_events()
+    except Exception as e:
+        if not getattr(render_km_buffer, "_warned", False):
+            render_km_buffer._warned = True
+            logging.getLogger("deploy_robot_client").warning(
+                f"buffer render/save disabled for this run (error: {e})"
+            )
+
+
+def finalize_km_buffer_recording(save_dir, fps, logger):
+    """Write the RAM-buffered captures to an mp4 and csv after the rollout ends.
+
+    The writer is released in a finally, so an interrupt mid-write still leaves a
+    valid mp4.
+
+    Args:
+        save_dir: Directory for buffer_render_<ts>.mp4 and buffer_log_<ts>.csv
+        fps: Frame rate for the mp4
+        logger: Logger instance to use
+    """
+    caps = getattr(render_km_buffer, "_captures", None)
+    render_km_buffer._captures = None
+    if not caps:
+        return
+    import os
+    import cv2
+
+    camera, total_slots, tile = render_km_buffer._meta
+    ts = render_km_buffer._ts
+    os.makedirs(save_dir, exist_ok=True)
+    mp4 = os.path.join(save_dir, f"buffer_render_{ts}.mp4")
+    csv_path = os.path.join(save_dir, f"buffer_log_{ts}.csv")
+
+    # Render each captured step into the mp4 and log its scalars to the csv
+    writer = None
+    n = 0
+    try:
+        with open(csv_path, "w") as csv:
+            csv.write("step,last_kf_priority,buffer_fill,buffer_size\n")
+            for step, priority, fill, slot_images in caps:
+                frame = _km_canvas(camera, total_slots, slot_images, fill, step, priority, tile)
+                if writer is None:
+                    h, w = frame.shape[:2]
+                    writer = cv2.VideoWriter(mp4, cv2.VideoWriter_fourcc(*"mp4v"), float(fps), (w, h))
+                writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                csv.write(f"{step},{round(priority, 4)},{fill},{total_slots - 1}\n")
+                n += 1
+    except Exception as e:
+        logger.warning(f"Keyframe buffer recording incomplete ({e}); wrote {n} frames")
+    finally:
+        if writer is not None:
+            writer.release()
+    logger.info(f"Saved {n} keyframe-buffer frames to {mp4} (+ {os.path.basename(csv_path)})")
+
+
 def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=None, sync_state=None):
     """Run with synchronous inference (policy runs locally)
     
@@ -614,20 +790,39 @@ def run_sync_inference(robot_config, checkpoint_path, args, logger, stop_event=N
             action = make_robot_action(action, dataset_features)
             
             robot.send_action(action)
-            
+
+            if args.render_buffer or args.save_buffer_dir:
+                render_km_buffer(policy, step, display=args.render_buffer,
+                                 save_dir=args.save_buffer_dir, fps=args.fps)
+
             # Maintain control frequency
             elapsed = time.perf_counter() - start_time
             if elapsed < dt:
                 time.sleep(dt - elapsed)
-            
+
             step += 1
-        
+
         if args.max_rollout_steps is not None:
             logger.info(f"Completed {step} rollout steps.")
-        
+
     except KeyboardInterrupt:
-        logger.info("Stopping robot...")
-    
+        logger.info("Stopping robot (Ctrl+C)...")
+    except Exception as e:
+        # rclpy turns Ctrl+C into an RCLError, not KeyboardInterrupt; catch it so finalize still runs.
+        logger.info(f"Control loop stopped ({type(e).__name__}: {e})")
+    finally:
+        if args.render_buffer or args.save_buffer_dir:
+            if args.save_buffer_dir:
+                finalize_km_buffer_recording(args.save_buffer_dir, args.fps, logger)
+            try:
+                import matplotlib.pyplot as plt
+                fig = getattr(render_km_buffer, "_fig", None)
+                if fig is not None:
+                    plt.close(fig)
+                    render_km_buffer._fig = None
+            except Exception:
+                pass
+
     # Build sync_state for caching (don't disconnect robot if caching)
     sync_state = {
         'policy': policy,
