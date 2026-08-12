@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -104,6 +106,116 @@ def test_sentry_config_defaults():
     cfg = SentryStrategyConfig()
     assert cfg.upload_every_n_episodes == 5
     assert cfg.target_video_file_size_mb is None
+
+
+def test_rollout_config_passes_policy_pretrained_revision(monkeypatch):
+    from lerobot.configs import PreTrainedConfig, parser
+    from lerobot.rollout import RolloutConfig
+    from tests.mocks.mock_robot import MockRobotConfig
+
+    captured = {}
+
+    def fake_from_pretrained(cls, pretrained_name_or_path, **kwargs):
+        captured["pretrained_name_or_path"] = pretrained_name_or_path
+        captured.update(kwargs)
+        return SimpleNamespace(device="cpu", pretrained_revision=kwargs["revision"])
+
+    monkeypatch.setattr(parser, "get_yaml_overrides", lambda _: ["--pretrained_revision=yaml-sha"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["lerobot-rollout", "--policy.path=user/policy", "--policy.pretrained_revision=cli-sha"],
+    )
+    monkeypatch.setattr(PreTrainedConfig, "from_pretrained", classmethod(fake_from_pretrained))
+
+    cfg = RolloutConfig(robot=MockRobotConfig())
+
+    assert captured["pretrained_name_or_path"] == "user/policy"
+    assert captured["revision"] == "cli-sha"
+    assert captured["cli_overrides"] == [
+        "--pretrained_revision=yaml-sha",
+        "--pretrained_revision=cli-sha",
+    ]
+    assert cfg.policy.pretrained_path == "user/policy"
+    assert cfg.policy.pretrained_revision == "cli-sha"
+
+
+def test_load_pretrained_policy_passes_revision(monkeypatch):
+    import lerobot.rollout.context as rollout_context
+
+    policy_config = SimpleNamespace(
+        type="mock",
+        use_peft=False,
+        pretrained_path="user/policy",
+        pretrained_revision="policy-sha",
+    )
+    policy_class = MagicMock()
+    loaded_policy = MagicMock()
+    policy_class.from_pretrained.return_value = loaded_policy
+    monkeypatch.setattr(rollout_context, "get_policy_class", lambda _: policy_class)
+
+    policy = rollout_context._load_pretrained_policy(policy_config)
+
+    assert policy is loaded_policy
+    policy_class.from_pretrained.assert_called_once_with(
+        "user/policy",
+        config=policy_config,
+        revision="policy-sha",
+    )
+
+
+def test_load_pretrained_peft_policy_keeps_adapter_and_base_revisions_separate(monkeypatch):
+    import lerobot.rollout.context as rollout_context
+
+    policy_config = SimpleNamespace(
+        type="mock",
+        use_peft=True,
+        pretrained_path="user/adapter",
+        pretrained_revision="adapter-sha",
+    )
+    policy_class = MagicMock()
+    base_policy = MagicMock()
+    policy_class.from_pretrained.return_value = base_policy
+    monkeypatch.setattr(rollout_context, "get_policy_class", lambda _: policy_class)
+
+    peft_config = SimpleNamespace(
+        base_model_name_or_path="user/base-policy",
+        revision="base-sha",
+    )
+    peft_config_from_pretrained = MagicMock(return_value=peft_config)
+    adapted_policy = MagicMock()
+    peft_model_from_pretrained = MagicMock(return_value=adapted_policy)
+    require_package = MagicMock()
+    monkeypatch.setattr(rollout_context, "require_package", require_package)
+    monkeypatch.setattr(
+        rollout_context,
+        "PeftConfig",
+        SimpleNamespace(from_pretrained=peft_config_from_pretrained),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        rollout_context,
+        "PeftModel",
+        SimpleNamespace(from_pretrained=peft_model_from_pretrained),
+        raising=False,
+    )
+
+    policy = rollout_context._load_pretrained_policy(policy_config)
+
+    assert policy is adapted_policy
+    require_package.assert_called_once_with("peft", extra="peft")
+    peft_config_from_pretrained.assert_called_once_with("user/adapter", revision="adapter-sha")
+    policy_class.from_pretrained.assert_called_once_with(
+        pretrained_name_or_path="user/base-policy",
+        config=policy_config,
+        revision="base-sha",
+    )
+    peft_model_from_pretrained.assert_called_once_with(
+        base_policy,
+        "user/adapter",
+        config=peft_config,
+        revision="adapter-sha",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +366,55 @@ def test_create_inference_engine_sync():
 # ---------------------------------------------------------------------------
 # Pure functions
 # ---------------------------------------------------------------------------
+
+
+def test_align_state_feature_order_matches_checkpoint_and_preserves_cameras(caplog):
+    from lerobot.rollout.context import _align_state_feature_order
+    from lerobot.utils.feature_utils import build_dataset_frame, hw_to_dataset_features
+
+    features = {
+        "wrist_camera": (480, 640, 3),
+        "joint_b.pos": float,
+        "joint_a.pos": float,
+    }
+
+    aligned = _align_state_feature_order(features, ["joint_a.pos", "joint_b.pos"])
+
+    assert list(aligned) == ["joint_a.pos", "joint_b.pos", "wrist_camera"]
+    assert aligned["wrist_camera"] == (480, 640, 3)
+    assert "reordering state" in caplog.text
+
+    dataset_features = hw_to_dataset_features(aligned, "observation")
+    frame = build_dataset_frame(
+        dataset_features,
+        {"joint_a.pos": 1.0, "joint_b.pos": 2.0, "wrist_camera": object()},
+        "observation",
+    )
+    assert frame["observation.state"].tolist() == [1.0, 2.0]
+
+
+@pytest.mark.parametrize(
+    ("policy_action_names", "feature_names"),
+    [
+        (None, ["joint_b.pos", "joint_a.pos", "wrist_camera"]),
+        (["joint_b.pos", "joint_a.pos"], ["joint_b.pos", "joint_a.pos", "wrist_camera"]),
+        (["joint_a.pos"], ["joint_b.pos", "joint_a.pos", "wrist_camera"]),
+        (["joint_a.pos", "gripper.pos"], ["joint_b.pos", "joint_a.pos", "wrist_camera"]),
+    ],
+)
+def test_align_state_feature_order_is_noop_without_an_exact_name_match(policy_action_names, feature_names):
+    from lerobot.rollout.context import _align_state_feature_order
+
+    features = {
+        "joint_b.pos": float,
+        "joint_a.pos": float,
+        "wrist_camera": (480, 640, 3),
+    }
+
+    aligned = _align_state_feature_order(features, policy_action_names)
+
+    assert aligned is features
+    assert list(aligned) == feature_names
 
 
 def test_estimate_max_episode_seconds_no_video():
